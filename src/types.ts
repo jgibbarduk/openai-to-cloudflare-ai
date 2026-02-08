@@ -74,6 +74,7 @@ interface AiJsonResponse {
   response: string;
   usage: UsageStats;
   tool_calls?: ToolCall[];
+  reasoning_content?: string; // Thinking/reasoning output from models like Qwen
 }
 
 type AiStreamResponse = ReadableStream<Uint8Array>;

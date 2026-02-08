@@ -1,1 +1,0 @@
-This folder contains the built output assets for the worker "ai-art-generator" generated at 2024-02-09T12:19:22.069Z.

@@ -7,6 +7,16 @@ const commonProps = {
 
 export const textGenerationModels: ModelType[] = [{
 	...commonProps,
+	id: "@cf/openai/gpt-oss-20b#text-generation",
+	name: "@cf/openai/gpt-oss-20b",
+	description: "OpenAI's open-weight models designed for powerful reasoning, agentic tasks, and versatile developer use cases – gpt-oss-20b is for lower latency, and local or specialized use-cases.",
+}, {
+	...commonProps,
+	id: "@cf/openai/gpt-oss-120b#text-generation",
+	name: "@cf/openai/gpt-oss-120b",
+	description: "OpenAI's open-weight models designed for powerful reasoning, agentic tasks, and versatile developer use cases – gpt-oss-120b is for production, general purpose, high reasoning use-cases.",
+}, {
+	...commonProps,
 	id: "@cf/meta/llama-3-8b-instruct#text-generation",
 	name: "@cf/meta/llama-3-8b-instruct",
 	description: "Generation over generation, Meta Llama 3 demonstrates state-of-the-art performance on a wide range of industry benchmarks and offers new capabilities, including improved reasoning.",
@@ -34,6 +44,12 @@ export const textGenerationModels: ModelType[] = [{
 	name: "@cf/mistral/mistral-7b-instruct-v0.1",
 	object: "model",
 	description: "Instruct fine-tuned version of the Mistral-7b generative text model with 7 billion parameters.",
+}, {
+	...commonProps,
+	id: "@cf/qwen/qwen3-30b-a3b-fp8#text-generation",
+	name: "@cf/qwen/qwen3-30b-a3b-fp8",
+	object: "model",
+	description: "Qwen3 30B model with fp8 quantization, optimized for tool calling and agentic workflows.",
 }, {
 	...commonProps,
 	id: "@hf/mistral/mistral-7b-instruct-v0.2#text-generation",

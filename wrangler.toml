@@ -11,10 +11,10 @@ DEFAULT_AI_MODEL = "@cf/meta/llama-3-8b-instruct"
 
 [[kv_namespaces]]
 binding = "CACHE"
-id = "8cc00797d6a6444f8a65d7ead29bf715"
-preview_id = "0ac8524517094753a46477bf1561f63d"
+id = "802cf2efee064993bebc235b53830317"
+preview_id = "46191dba66f74ce8939ea4876152aa2d"
 
-# wrangler.toml (wrangler v3.88.0^)
+# wrangler.toml (wsrangler v3.88.0^)
 [observability.logs]
 enabled = true
 
