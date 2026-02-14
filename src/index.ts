@@ -39,7 +39,7 @@
 import { textGenerationModels } from "./models";
 
 // Version for deployment tracking
-const PROXY_VERSION = "1.9.18"; // Updated: 2026-02-14 - ENHANCEMENT: Responses API now properly handles tool_calls and reasoning.summary fields
+const PROXY_VERSION = "1.9.30"; // Updated: 2026-02-14 - FIX: Use multipart/form-data for Cloudflare image generation API
 
 let globalModels: ModelType[] = [];
 
@@ -51,6 +51,7 @@ const REASONING_MODELS = [
   'o3-mini',
   'o1',
   'o3',
+  'gpt-5',  // gpt-5 alias maps to GLM-4.7-flash with reasoning support
   'glm-4',  // GLM-4.7-flash supports reasoning_content
   'qwen'    // Qwen models support reasoning_content
 ];
@@ -86,6 +87,7 @@ const MODEL_ALIASES: Record<string, string> = {
   'gpt-4-turbo': '@cf/qwen/qwen3-30b-a3b-fp8',
   'gpt-4o': '@cf/qwen/qwen3-30b-a3b-fp8',
   'gpt-4o-mini': '@cf/meta/llama-3-8b-instruct',  // Smaller model for simple tasks
+  'gpt-5': '@cf/zai-org/glm-4.7-flash',  // ✅ GLM-4.7-Flash with reasoning and tool calling
   'gpt-3.5-turbo': '@cf/meta/llama-3-8b-instruct',
   'gpt-3.5-turbo-16k': '@cf/meta/llama-3-8b-instruct',
   'mistral-small': '@cf/mistralai/mistral-small-3.1-24b-instruct',  // ✅ NEW: Mistral Small with 128K context
@@ -863,56 +865,52 @@ export default {
       }
 
       // Check if valid image generation model
-      const models = await this.listAIModels(env);
-      let modelInfo = models.find(m =>
-        m.name === model && (m.taskName === 'Image Generation' || m.name.includes('flux'))
-      );
+      // Accept models that contain 'flux', 'dall-e', 'stable-diffusion', or 'gpt-image'
+      const isImageModel = model.includes('flux') ||
+                          model.includes('dall-e') ||
+                          model.includes('stable-diffusion') ||
+                          model.includes('gpt-image') ||
+                          requestedModel.includes('dall-e') ||
+                          requestedModel.includes('gpt-image');
 
-      // Fallback: check if it's a known image generation model even if not in the list
-      if (!modelInfo && model.includes('flux')) {
-        console.log(`[Image] Model ${model} not in list but recognized as Flux image model - proceeding`);
-        // Allow known image models to proceed even if not in the fetched list
-        modelInfo = { name: model, taskName: 'Image Generation' } as any;
+      if (!isImageModel) {
+        console.log(`[Image] Model ${model} is not recognized as an image generation model`);
+        return this.errorResponse("Invalid image generation model - must be a Flux, DALL-E, or image generation model", 400);
       }
 
-      if (!modelInfo) {
-        console.log(`[Image] Model ${model} not found or not an image generation model`);
-        return this.errorResponse("Invalid image generation model", 400);
-      }
-
-      // Cloudflare Flux models require multipart format
-      // We need to create a FormData object and convert it to the proper format
-      const form = new FormData();
-      form.append('prompt', prompt);
-
-      // Parse size parameter (e.g., "1024x1024") and add dimensions
-      if (size) {
-        const [width, height] = size.split('x').map(s => s.trim());
-        if (width) form.append('width', width);
-        if (height) form.append('height', height);
-      } else {
-        // Default dimensions for Flux
-        form.append('width', '1024');
-        form.append('height', '1024');
-      }
+      console.log(`[Image] Model ${model} recognized as image generation model - proceeding`);
 
       console.log(`[Image] Calling Cloudflare AI.run with model ${model}`);
 
-      // Get image from Cloudflare AI using multipart
-      // We need to create a Request object to get the proper multipart body
-      const dummyRequest = new Request('http://dummy', {
-        method: 'POST',
-        body: form
-      });
+      // Cloudflare image generation models require specific format
+      // For Flux: { prompt: string } or with width/height
+      const imageInput: any = { prompt };
+
+      // Parse size and add width/height if provided
+      if (size) {
+        const [width, height] = size.split('x').map(s => parseInt(s.trim()));
+        if (width && height) {
+          imageInput.width = width;
+          imageInput.height = height;
+          console.log(`[Image] Setting size: ${width}x${height}`);
+        }
+      }
 
       let aiRes;
       try {
-        aiRes = await env.AI.run(model, {
-          multipart: {
-            body: dummyRequest.body,
-            contentType: dummyRequest.headers.get('content-type') || 'multipart/form-data'
-          }
-        });
+        console.log(`[Image] Calling Cloudflare AI.run with model ${model}`);
+
+        // Cloudflare Workers AI binding for image generation
+        // According to the error, it expects inputs in a specific format
+        // For Flux models, the binding expects: @cf-ai-run(model, inputs)
+        // where inputs = { prompt, width?, height?, num_steps?, guidance? }
+
+        console.log(`[Image] Input object:`, JSON.stringify(imageInput).substring(0, 200));
+
+        // Call the AI binding directly with the prompt and size parameters
+        aiRes = await env.AI.run(model as any, imageInput);
+
+        console.log(`[Image] AI.run completed, response type: ${typeof aiRes}`);
       } catch (error: any) {
         const errorMsg = (error as Error).message;
         const errorType = error?.constructor?.name || typeof error;
@@ -949,12 +947,18 @@ export default {
 
       console.log(`[Image] Response type: ${typeof aiRes}, is ReadableStream: ${aiRes instanceof ReadableStream}`);
 
-      // Cloudflare returns image data - it could be a base64 string or URL
-      // The Flux model returns a base64-encoded PNG image
+      // Debug: Log the full response structure
+      if (typeof aiRes === 'object' && aiRes !== null && !(aiRes instanceof ReadableStream)) {
+        console.log(`[Image] Full aiRes object:`, JSON.stringify(aiRes, null, 2).substring(0, 500));
+      }
+
+      // Cloudflare Flux returns image data in various formats
+      // Usually as a Uint8Array or ArrayBuffer that needs to be converted to base64
       let imageData: string = '';
 
       if (aiRes instanceof ReadableStream) {
-        // Handle streaming response (unlikely for image generation)
+        // Handle streaming response
+        console.log(`[Image] Response is a ReadableStream, reading chunks...`);
         const reader = aiRes.getReader();
         const chunks: Uint8Array[] = [];
         let result;
@@ -969,35 +973,56 @@ export default {
         }
         // Convert to base64
         const bytes = Array.from(fullData);
-        imageData = 'data:image/png;base64,' + btoa(String.fromCharCode(...bytes));
+        imageData = btoa(String.fromCharCode(...bytes));
+        console.log(`[Image] Converted stream to base64, length: ${imageData.length}`);
+      } else if (aiRes instanceof Uint8Array || aiRes instanceof ArrayBuffer) {
+        // Binary data - convert to base64
+        const bytes = aiRes instanceof Uint8Array ? Array.from(aiRes) : Array.from(new Uint8Array(aiRes));
+        imageData = btoa(String.fromCharCode(...bytes));
+        console.log(`[Image] Converted binary data to base64, length: ${imageData.length}`);
       } else if (typeof aiRes === 'string') {
-        // Direct string response (base64 or URL)
+        // Direct string response (already base64 or URL)
         imageData = aiRes;
+        console.log(`[Image] Response is string, length: ${imageData.length}`);
       } else if (typeof aiRes === 'object' && aiRes !== null) {
-        // Object response - check for various possible formats
-        console.log(`[Image] Response keys: ${Object.keys(aiRes).join(', ')}`);
+        // Object response - Flux typically returns { image: Uint8Array } or { image: base64string }
+        console.log(`[Image] Response is object with keys: ${Object.keys(aiRes).join(', ')}`);
 
-        // Try to extract image data from response
-        if ('image' in aiRes && typeof (aiRes as any).image === 'string') {
-          imageData = (aiRes as any).image;
+        if ('image' in aiRes) {
+          const imgData = (aiRes as any).image;
+          if (imgData instanceof Uint8Array || imgData instanceof ArrayBuffer) {
+            // Binary image data
+            const bytes = imgData instanceof Uint8Array ? Array.from(imgData) : Array.from(new Uint8Array(imgData));
+            imageData = btoa(String.fromCharCode(...bytes));
+            console.log(`[Image] Extracted binary image from 'image' field, converted to base64`);
+          } else if (typeof imgData === 'string') {
+            imageData = imgData;
+            console.log(`[Image] Extracted string image from 'image' field`);
+          }
         } else if ('data' in aiRes && typeof (aiRes as any).data === 'string') {
           imageData = (aiRes as any).data;
+          console.log(`[Image] Extracted from 'data' field`);
         } else if ('result' in aiRes && typeof (aiRes as any).result === 'string') {
           imageData = (aiRes as any).result;
-        } else if ('b64' in aiRes && typeof (aiRes as any).b64 === 'string') {
-          imageData = (aiRes as any).b64;
+          console.log(`[Image] Extracted from 'result' field`);
         } else {
-          console.warn(`[Image] Unexpected response format:`, JSON.stringify(aiRes).substring(0, 200));
-          imageData = JSON.stringify(aiRes);
+          console.error(`[Image] Unexpected response format:`, JSON.stringify(aiRes).substring(0, 300));
+          console.error(`[Image] Response does not contain image data in expected fields`);
+          return this.errorResponse(
+            "Image generation returned unexpected format - no image data found",
+            500,
+            "unexpected_response",
+            `Response contained: ${Object.keys(aiRes).join(', ')}`
+          );
         }
       }
 
-      console.log(`[Image] Image data length: ${imageData.length} chars`);
+      console.log(`[Image] Final image data length: ${imageData.length} chars, starts with: ${imageData.substring(0, 20)}`);
 
       // Ensure we have image data
-      if (!imageData) {
+      if (!imageData || imageData.length === 0) {
         console.error(`[Image] No image data generated`);
-        return this.errorResponse("Failed to generate image", 500);
+        return this.errorResponse("Failed to generate image - no data returned", 500);
       }
 
       // Format response based on request
@@ -1027,12 +1052,12 @@ export default {
         }
       }
 
-      // Add revised prompt if model adjusted it
-      if ('revised_prompt' in (aiRes as any)) {
-        imageObject.revised_prompt = (aiRes as any).revised_prompt;
-      }
+      // NOTE: We intentionally don't include revised_prompt here
+      // because some models (like GLM-4) see it and incorrectly think
+      // the image generation failed and only a prompt was returned.
+      // The actual image URL/b64 is what matters for tool results.
 
-      return new Response(JSON.stringify({
+      const responseData = {
         created: Math.floor(Date.now() / 1000),
         data: Array(n).fill(null).map((_, i) => ({
           ...imageObject,
@@ -1040,7 +1065,15 @@ export default {
           // For now, we return the same image n times
         })),
         model: requestedModel  // Return the requested model name to Onyx
-      } as OpenAiImageGenerationRes), {
+      };
+
+      console.log(`[Image] Response data keys:`, Object.keys(responseData));
+      console.log(`[Image] Image object keys:`, Object.keys(imageObject));
+      console.log(`[Image] Has url:`, 'url' in imageObject);
+      console.log(`[Image] Has b64_json:`, 'b64_json' in imageObject);
+      console.log(`[Image] Has revised_prompt:`, 'revised_prompt' in imageObject);
+
+      return new Response(JSON.stringify(responseData as OpenAiImageGenerationRes), {
         status: 200,
         headers: { 'Content-Type': 'application/json' }
       });
@@ -1212,7 +1245,22 @@ export default {
       // Ensure content is a string
       if (typeof content !== "string") {
         console.log(`[Validation] Message content is ${typeof content}, converting to string`);
-        content = String(content);
+
+        // Handle array of content parts (Responses API format)
+        if (Array.isArray(content)) {
+          content = content
+            .map((part: any) => {
+              // Extract text from different content part types
+              if (part.type === "input_text" && part.text) return part.text;
+              if (part.type === "output_text" && part.text) return part.text;
+              if (part.type === "text" && part.text) return part.text;
+              if (typeof part === "string") return part;
+              // For other types, try to stringify
+              return JSON.stringify(part);
+            })
+            .filter(Boolean)
+            .join("\n");
+        }
       }
 
       return {
@@ -1322,24 +1370,34 @@ export default {
         // ✅ Check if this is a reasoning model (o1, o3 series)
         // Only reasoning models should include reasoning_content in deltas
         const isReasoningModel = REASONING_MODELS.some(rm => model.toLowerCase().includes(rm.toLowerCase()));
+        console.log(`[Stream] Checking reasoning support for model: ${model}`);
+        console.log(`[Stream] Is reasoning model: ${isReasoningModel}`);
         if (!isReasoningModel) {
           console.log(`[Stream] Model ${model} is NOT a reasoning model - will strip reasoning_content from deltas`);
         }
 
-        // Send initial empty delta
-        const initialChunk: any = {
-          ...metadata,
-          choices: [{ index: index, delta: { role: "assistant", content: "" }, finish_reason: null }]
+        // Responses API tracking variables
+        const responseId = completionId;
+        const itemId = `msg_${crypto.randomUUID().split('-')[0]}`;
+        const outputIndex = 0;
+        const contentIndex = 0;
+
+        // Helper function to build Responses API event (matches official OpenAI format)
+        const buildResponsesEvent = (eventType: string, data: any) => {
+          const baseEvent: any = {
+            type: eventType,
+            ...data
+          };
+
+          // For delta and done events, include required tracking fields
+          if (eventType.includes('.delta') || eventType.includes('.done')) {
+            baseEvent.item_id = itemId;
+            baseEvent.output_index = outputIndex;
+            baseEvent.content_index = contentIndex;
+          }
+
+          return baseEvent;
         };
-
-        // Responses API requires 'type' field in streaming chunks
-        if (isResponsesEndpoint) {
-          initialChunk.type = "response.output_item.added";
-        }
-
-        controller.enqueue(
-          encoder.encode('data: ' + JSON.stringify(initialChunk) + "\n\n")
-        );
 
         let buffer = ""; // Buffer to accumulate incomplete chunks
         let done = false;
@@ -1347,6 +1405,52 @@ export default {
         let totalContentLength = 0; // Track total content generated
         let hasReasoningContent = false; // Track if we received any reasoning
         let toolCallBuffer: Record<string, any> = {}; // Buffer for tool calls being streamed
+
+        // Accumulate full text for .done events (Responses API)
+        let accumulatedText = "";
+        let accumulatedReasoning = "";
+        let accumulatedToolCalls: any[] = [];
+
+        // Send initial events for Responses API
+        if (isResponsesEndpoint) {
+          // 1. Send response.created (with created_at and output)
+          const createdEvent = {
+            type: "response.created",
+            response: {
+              id: responseId,
+              object: "response",
+              created_at: Math.floor(timestamp / 1000),
+              model: model,
+              status: "in_progress",
+              output: []
+            }
+          };
+          controller.enqueue(
+            encoder.encode('event: response.created\ndata: ' + JSON.stringify(createdEvent) + "\n\n")
+          );
+
+          // 2. Send response.output_item.added
+          const itemAddedEvent = {
+            type: "response.output_item.added",
+            output_index: outputIndex,
+            item: {
+              id: itemId,
+              type: "message",
+              role: "assistant"
+            }
+          };
+          controller.enqueue(
+            encoder.encode('event: response.output_item.added\ndata: ' + JSON.stringify(itemAddedEvent) + "\n\n")
+          );
+        } else {
+          // Chat Completions: send initial delta
+          controller.enqueue(
+            encoder.encode('data: ' + JSON.stringify({
+              ...metadata,
+              choices: [{ index: index, delta: { role: "assistant", content: "" }, finish_reason: null }]
+            }) + "\n\n")
+          );
+        }
 
         while (!done) {
           const { value, done: streamDone } = await reader.read();
@@ -1418,24 +1522,31 @@ export default {
                   // Send reasoning_content first (if present AND model supports it)
                   if (isReasoningModel && delta.reasoning_content && typeof delta.reasoning_content === 'string') {
                     hasReasoningContent = true;
-                    const reasoningChunk: any = {
-                      ...metadata,
-                      id: completionId,
-                      choices: [{
-                        index: index,
-                        delta: { reasoning_content: delta.reasoning_content },
-                        finish_reason: null
-                      }]
-                    };
+                    accumulatedReasoning += delta.reasoning_content;
 
-                    // Responses API requires 'type' field
                     if (isResponsesEndpoint) {
-                      reasoningChunk.type = "response.output_text.delta";
+                      // Responses API format - use response.reasoning_text.delta for raw CoT
+                      const reasoningEvent = buildResponsesEvent("response.reasoning_text.delta", {
+                        delta: delta.reasoning_content
+                      });
+                      controller.enqueue(
+                        encoder.encode('event: response.reasoning_text.delta\ndata: ' + JSON.stringify(reasoningEvent) + "\n\n")
+                      );
+                    } else {
+                      // Chat Completions format
+                      const reasoningChunk: any = {
+                        ...metadata,
+                        id: completionId,
+                        choices: [{
+                          index: index,
+                          delta: { reasoning_content: delta.reasoning_content },
+                          finish_reason: null
+                        }]
+                      };
+                      controller.enqueue(
+                        encoder.encode('data: ' + JSON.stringify(reasoningChunk) + "\n\n")
+                      );
                     }
-
-                    controller.enqueue(
-                      encoder.encode('data: ' + JSON.stringify(reasoningChunk) + "\n\n")
-                    );
                   }
 
                   // Handle regular content separately (final response)
@@ -1443,6 +1554,7 @@ export default {
                   if (delta.content !== undefined && typeof delta.content === 'string') {
                     let content = delta.content;
                     totalContentLength += content.length;
+                    accumulatedText += content;
 
                     // Check if this looks like a tool call JSON being output as text
                     const looksLikeToolCallJson = /^\s*\{["\s]*type["\s]*:["\s]*function/.test(content);
@@ -1453,24 +1565,29 @@ export default {
                         console.log("[Stream] Skipping tool call JSON in content (actual tool_calls present)");
                       } else if (content.length > 0 || delta.content === "") {
                         // Send content in its own chunk
-                        const contentChunk: any = {
-                          ...metadata,
-                          id: completionId,
-                          choices: [{
-                            index: index,
-                            delta: { content: content },
-                            finish_reason: null
-                          }]
-                        };
-
-                        // Responses API requires 'type' field
                         if (isResponsesEndpoint) {
-                          contentChunk.type = "response.output_text.delta";
+                          // Responses API format
+                          const contentEvent = buildResponsesEvent("response.output_text.delta", {
+                            delta: content
+                          });
+                          controller.enqueue(
+                            encoder.encode('event: response.output_text.delta\ndata: ' + JSON.stringify(contentEvent) + "\n\n")
+                          );
+                        } else {
+                          // Chat Completions format
+                          const contentChunk: any = {
+                            ...metadata,
+                            id: completionId,
+                            choices: [{
+                              index: index,
+                              delta: { content: content },
+                              finish_reason: null
+                            }]
+                          };
+                          controller.enqueue(
+                            encoder.encode('data: ' + JSON.stringify(contentChunk) + "\n\n")
+                          );
                         }
-
-                        controller.enqueue(
-                          encoder.encode('data: ' + JSON.stringify(contentChunk) + "\n\n")
-                        );
                       }
                     }
                   }
@@ -1487,22 +1604,51 @@ export default {
                   if (delta.tool_calls && Array.isArray(delta.tool_calls) && delta.tool_calls.length > 0) {
                     console.log("[Stream] Tool calls detected:", JSON.stringify(delta.tool_calls));
 
-                    // Forward tool calls as-is from Cloudflare
-                    // They arrive in chunks but we send each chunk immediately
-                    // Onyx will buffer them on its side and reconstruct the full call
-                    controller.enqueue(
-                      encoder.encode(
-                        'data: ' + JSON.stringify({
-                          ...metadata,
-                          id: completionId,
-                          choices: [{
-                            index: index,
-                            delta: { tool_calls: delta.tool_calls },
-                            finish_reason: null
-                          }]
-                        }) + "\n\n"
-                      )
-                    );
+                    if (isResponsesEndpoint) {
+                      // Responses API format - use function_call_arguments.delta
+                      for (const toolCall of delta.tool_calls) {
+                        const callId = toolCall.id || `call_${crypto.randomUUID().split('-')[0]}`;
+                        const functionCallEvent = buildResponsesEvent("response.function_call_arguments.delta", {
+                          call_id: callId,
+                          name: toolCall.function?.name,
+                          delta: toolCall.function?.arguments || ""
+                        });
+
+                        // Track tool calls for .done event
+                        if (!accumulatedToolCalls.find(tc => tc.id === callId)) {
+                          accumulatedToolCalls.push({
+                            id: callId,
+                            name: toolCall.function?.name || "",
+                            arguments: toolCall.function?.arguments || ""
+                          });
+                        } else {
+                          // Append to existing
+                          const existing = accumulatedToolCalls.find(tc => tc.id === callId);
+                          if (existing) {
+                            existing.arguments += toolCall.function?.arguments || "";
+                          }
+                        }
+
+                        controller.enqueue(
+                          encoder.encode('data: ' + JSON.stringify(functionCallEvent) + "\n\n")
+                        );
+                      }
+                    } else {
+                      // Chat Completions format - forward as-is
+                      controller.enqueue(
+                        encoder.encode(
+                          'data: ' + JSON.stringify({
+                            ...metadata,
+                            id: completionId,
+                            choices: [{
+                              index: index,
+                              delta: { tool_calls: delta.tool_calls },
+                              finish_reason: null
+                            }]
+                          }) + "\n\n"
+                        )
+                      );
+                    }
                   }
 
                   // Check for chunks with no meaningful content (empty delta with no finish_reason)
@@ -1541,34 +1687,54 @@ export default {
                 else if (parsed.tool_calls && Array.isArray(parsed.tool_calls) && parsed.tool_calls.length > 0) {
                   console.log("[Stream] Tool calls (CF native):", JSON.stringify(parsed.tool_calls));
 
-                  const openaiToolCalls = parsed.tool_calls.map((tc: any, idx: number) => ({
-                    index: idx,
-                    id: `call_${crypto.randomUUID().split('-')[0]}`,
-                    type: "function",
-                    function: {
-                      name: tc.name,
-                      arguments: typeof tc.arguments === 'string' ? tc.arguments : JSON.stringify(tc.arguments)
-                    }
-                  }));
-
-                  const nativeToolCallChunk: any = {
-                    ...metadata,
-                    id: completionId,
-                    choices: [{
-                      index: index,
-                      delta: { tool_calls: openaiToolCalls },
-                      finish_reason: null
-                    }]
-                  };
-
-                  // Responses API requires 'type' field in streaming chunks
                   if (isResponsesEndpoint) {
-                    nativeToolCallChunk.type = "response.output_item.delta";
-                  }
+                    // Responses API format
+                    for (const tc of parsed.tool_calls) {
+                      const callId = `call_${crypto.randomUUID().split('-')[0]}`;
+                      const args = typeof tc.arguments === 'string' ? tc.arguments : JSON.stringify(tc.arguments);
 
-                  controller.enqueue(
-                    encoder.encode('data: ' + JSON.stringify(nativeToolCallChunk) + "\n\n")
-                  );
+                      const functionCallEvent = buildResponsesEvent("response.function_call_arguments.delta", {
+                        call_id: callId,
+                        name: tc.name,
+                        delta: args
+                      });
+
+                      // Track for .done event
+                      accumulatedToolCalls.push({
+                        id: callId,
+                        name: tc.name,
+                        arguments: args
+                      });
+
+                      controller.enqueue(
+                        encoder.encode('data: ' + JSON.stringify(functionCallEvent) + "\n\n")
+                      );
+                    }
+                  } else {
+                    // Chat Completions format
+                    const openaiToolCalls = parsed.tool_calls.map((tc: any, idx: number) => ({
+                      index: idx,
+                      id: `call_${crypto.randomUUID().split('-')[0]}`,
+                      type: "function",
+                      function: {
+                        name: tc.name,
+                        arguments: typeof tc.arguments === 'string' ? tc.arguments : JSON.stringify(tc.arguments)
+                      }
+                    }));
+
+                    const nativeToolCallChunk: any = {
+                      ...metadata,
+                      id: completionId,
+                      choices: [{
+                        index: index,
+                        delta: { tool_calls: openaiToolCalls },
+                        finish_reason: null
+                      }]
+                    };
+                    controller.enqueue(
+                      encoder.encode('data: ' + JSON.stringify(nativeToolCallChunk) + "\n\n")
+                    );
+                  }
                 }
 
                 // Check for finish (both formats)
@@ -1640,47 +1806,59 @@ export default {
 
                 // Handle OpenAI-compatible format
                 if (delta?.content && typeof delta.content === 'string') {
-                  const bufferContentChunk: any = {
-                    ...metadata,
-                    id: completionId,
-                    choices: [{
-                      index: index,
-                      delta: { content: delta.content },
-                      finish_reason: null,
-                      logprobs: null  // ✅ Required field
-                    }]
-                  };
+                  accumulatedText += delta.content;
 
-                  // Responses API requires 'type' field in streaming chunks
                   if (isResponsesEndpoint) {
-                    bufferContentChunk.type = "response.output_text.delta";
+                    const bufferEvent = buildResponsesEvent("response.output_text.delta", {
+                      item_id: itemId,
+                      delta: delta.content
+                    });
+                    controller.enqueue(
+                      encoder.encode('event: response.output_text.delta\ndata: ' + JSON.stringify(bufferEvent) + "\n\n")
+                    );
+                  } else {
+                    const bufferContentChunk: any = {
+                      ...metadata,
+                      id: completionId,
+                      choices: [{
+                        index: index,
+                        delta: { content: delta.content },
+                        finish_reason: null,
+                        logprobs: null
+                      }]
+                    };
+                    controller.enqueue(
+                      encoder.encode('data: ' + JSON.stringify(bufferContentChunk) + "\n\n")
+                    );
                   }
-
-                  controller.enqueue(
-                    encoder.encode('data: ' + JSON.stringify(bufferContentChunk) + "\n\n")
-                  );
                 }
                 // Handle Cloudflare native format
                 else if (parsed.response && typeof parsed.response === 'string') {
-                  const bufferNativeChunk: any = {
-                    ...metadata,
-                    id: completionId,
-                    choices: [{
-                      index: index,
-                      delta: { content: parsed.response },
-                      finish_reason: null,
-                      logprobs: null  // ✅ Required field
-                    }]
-                  };
+                  accumulatedText += parsed.response;
 
-                  // Responses API requires 'type' field in streaming chunks
                   if (isResponsesEndpoint) {
-                    bufferNativeChunk.type = "response.output_text.delta";
+                    const bufferEvent = buildResponsesEvent("response.output_text.delta", {
+                      item_id: itemId,
+                      delta: parsed.response
+                    });
+                    controller.enqueue(
+                      encoder.encode('event: response.output_text.delta\ndata: ' + JSON.stringify(bufferEvent) + "\n\n")
+                    );
+                  } else {
+                    const bufferNativeChunk: any = {
+                      ...metadata,
+                      id: completionId,
+                      choices: [{
+                        index: index,
+                        delta: { content: parsed.response },
+                        finish_reason: null,
+                        logprobs: null
+                      }]
+                    };
+                    controller.enqueue(
+                      encoder.encode('data: ' + JSON.stringify(bufferNativeChunk) + "\n\n")
+                    );
                   }
-
-                  controller.enqueue(
-                    encoder.encode('data: ' + JSON.stringify(bufferNativeChunk) + "\n\n")
-                  );
                 }
               }
             } catch (err) {
@@ -1689,48 +1867,131 @@ export default {
           }
         }
 
-        // Send final [DONE] marker
+        // Send final completion event
         console.log("[Stream] Sending final finish_reason: stop");
-        const finalChunk: any = {
-          ...metadata,
-          id: completionId,
-          choices: [{
-            index: index,
-            delta: {},
-            finish_reason: "stop",
-            logprobs: null  // ✅ Required field
-          }]
-        };
 
-        // Responses API requires 'type' field in streaming chunks
         if (isResponsesEndpoint) {
-          finalChunk.type = "response.output_item.done";
+          // Responses API: send .done events for accumulated content
+
+          // Send response.reasoning_text.done for reasoning if we had any (raw CoT)
+          if (accumulatedReasoning) {
+            const reasoningDone = buildResponsesEvent("response.reasoning_text.done", {
+              text: accumulatedReasoning
+            });
+            controller.enqueue(
+              encoder.encode('event: response.reasoning_text.done\ndata: ' + JSON.stringify(reasoningDone) + "\n\n")
+            );
+            console.log("[Stream] Sent reasoning text.done, length:", accumulatedReasoning.length);
+          }
+
+          // Send response.output_text.done for regular content if we had any
+          if (accumulatedText) {
+            const textDone = buildResponsesEvent("response.output_text.done", {
+              text: accumulatedText
+            });
+            controller.enqueue(
+              encoder.encode('event: response.output_text.done\ndata: ' + JSON.stringify(textDone) + "\n\n")
+            );
+            console.log("[Stream] Sent content text.done, length:", accumulatedText.length);
+          }
+
+          // Send response.function_call_arguments.done for each tool call
+          for (const toolCall of accumulatedToolCalls) {
+            const functionDone = buildResponsesEvent("response.function_call_arguments.done", {
+              call_id: toolCall.id,
+              name: toolCall.name,
+              arguments: toolCall.arguments
+            });
+            controller.enqueue(
+              encoder.encode('event: response.function_call_arguments.done\ndata: ' + JSON.stringify(functionDone) + "\n\n")
+            );
+            console.log("[Stream] Sent function_call.done for:", toolCall.name);
+          }
+
+          // Send response.output_item.done
+          const itemDoneEvent = {
+            type: "response.output_item.done",
+            output_index: outputIndex,
+            item: {
+              id: itemId,
+              type: "message",
+              role: "assistant",
+              status: "completed"
+            }
+          };
+          controller.enqueue(
+            encoder.encode('event: response.output_item.done\ndata: ' + JSON.stringify(itemDoneEvent) + "\n\n")
+          );
+
+          // Send response.completed event (final event before [DONE])
+          const completedEvent = {
+            type: "response.completed",
+            response: {
+              id: responseId,
+              object: "response",
+              created_at: Math.floor(timestamp / 1000),
+              model: model,
+              status: "completed",
+              output: [{
+                id: itemId,
+                type: "message",
+                role: "assistant",
+                status: "completed",
+                content: [{
+                  type: "output_text",
+                  text: accumulatedText || ""
+                }]
+              }],
+              usage: {
+                input_tokens: Math.ceil(totalContentLength / 4),
+                output_tokens: Math.ceil((accumulatedText?.length || 0) / 4),
+                total_tokens: Math.ceil((totalContentLength + (accumulatedText?.length || 0)) / 4)
+              }
+            }
+          };
+          controller.enqueue(
+            encoder.encode('event: response.completed\ndata: ' + JSON.stringify(completedEvent) + "\n\n")
+          );
+        } else {
+          // Chat Completions format
+          const finalChunk: any = {
+            ...metadata,
+            id: completionId,
+            choices: [{
+              index: index,
+              delta: {},
+              finish_reason: "stop",
+              logprobs: null
+            }]
+          };
+          controller.enqueue(
+            encoder.encode('data: ' + JSON.stringify(finalChunk) + "\n\n")
+          );
         }
 
-        controller.enqueue(
-          encoder.encode('data: ' + JSON.stringify(finalChunk) + "\n\n")
-        );
-
-        // ✅ Send usage data chunk (required by OpenAI spec for streaming)
+        // ✅ Send usage data chunk (only for Chat Completions API)
         // Note: Cloudflare doesn't provide token counts in streaming, so we estimate
-        const estimatedPromptTokens = Math.ceil(totalContentLength / 4); // rough estimate
-        const estimatedCompletionTokens = Math.ceil(totalContentLength / 4);
-        controller.enqueue(
-          encoder.encode(
-            'data: ' + JSON.stringify({
-              id: completionId,
-              object: "chat.completion.chunk",
-              created: Math.floor(timestamp / 1000),
-              model,
-              choices: [],
-              usage: {
-                prompt_tokens: estimatedPromptTokens,
-                completion_tokens: estimatedCompletionTokens,
-                total_tokens: estimatedPromptTokens + estimatedCompletionTokens
-              }
-            }) + "\n\n"
-          )
-        );
+        // Responses API doesn't use separate usage chunks - usage is in the final .done event
+        if (!isResponsesEndpoint) {
+          const estimatedPromptTokens = Math.ceil(totalContentLength / 4); // rough estimate
+          const estimatedCompletionTokens = Math.ceil(totalContentLength / 4);
+          controller.enqueue(
+            encoder.encode(
+              'data: ' + JSON.stringify({
+                id: completionId,
+                object: "chat.completion.chunk",
+                created: Math.floor(timestamp / 1000),
+                model,
+                choices: [],
+                usage: {
+                  prompt_tokens: estimatedPromptTokens,
+                  completion_tokens: estimatedCompletionTokens,
+                  total_tokens: estimatedPromptTokens + estimatedCompletionTokens
+                }
+              }) + "\n\n"
+            )
+          );
+        }
 
         // ✅ Send [DONE] terminator (required by OpenAI spec)
         controller.enqueue(encoder.encode('data: [DONE]\n\n'));
@@ -2440,6 +2701,12 @@ export default {
       // Transform to Cloudflare format
       const { model, options } = this.transformChatCompletionRequest(validatedData, env);
       console.log("[Responses] Model in use:", model, 'Stream:', options?.stream);
+
+      // Log tools being sent to Cloudflare (for debugging)
+      if (options?.tools && options.tools.length > 0) {
+        console.log(`[Responses] Sending ${options.tools.length} tools to Cloudflare AI`);
+        console.log(`[Responses] Tool names: ${options.tools.map((t: any) => t.function?.name).join(', ')}`);
+      }
 
       // Call Cloudflare AI
       const aiRes = await env.AI.run(model, options);

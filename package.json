@@ -1,5 +1,5 @@
 {
-  "version": "1.9.12",
+  "version": "2.0.1",
   "scripts": {
     "api-key": "bash -c 'API_KEY=sk-proj-$(openssl rand -base64 156 | tr -d \"+/\n=\" | tr \"+/\" \"-_\")-mlt && echo \"API_KEY=${API_KEY}\" | tee -a .env && wrangler secret put API_KEY <<< \"$API_KEY\"'",
     "dev": "wrangler dev --port 3000 --ip 0.0.0.0 --remote src/index.ts",

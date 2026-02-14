@@ -58,6 +58,12 @@ export const textGenerationModels: ModelType[] = [{
 	description: "GLM-4.7-Flash is a lightweight, high-speed language model optimized for tool calling and function execution.",
 }, {
 	...commonProps,
+	id: "gpt-5#text-generation",
+	name: "gpt-5",
+	object: "model",
+	description: "GPT-5 alias for GLM-4.7-Flash - Advanced reasoning model with tool calling support and chain-of-thought capabilities.",
+}, {
+	...commonProps,
 	id: "@hf/mistral/mistral-7b-instruct-v0.2#text-generation",
 	name: "@hf/mistral/mistral-7b-instruct-v0.2",
 	object: "model",
