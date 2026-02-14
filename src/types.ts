@@ -3,7 +3,7 @@ interface Env {
   AI: {
     run: (model: Model, options: AiPromptInputOptions | AiMessagesInputOptions | AiEmbeddingInputOptions) => Promise<AiNormalResponse | AiEmbeddingResponse | AiStreamResponse>;
   };
-  API_KEY: string;
+  API_KEY?: string;  // Optional - if set, authentication is required
   DEFAULT_AI_MODEL: string;
   CACHE: KVNamespace;
   CF_API_KEY: string | undefined;
@@ -191,6 +191,32 @@ interface OpenAiChatCompletionReq {
 }
 
 /**
+ * Image Generation
+ */
+interface OpenAiImageGenerationReq {
+  prompt: string;
+  model: string;
+  n?: number;  // Number of images (default: 1)
+  size?: '256x256' | '512x512' | '1024x1024' | '1024x1792' | '1792x1024';  // Image size
+  quality?: 'standard' | 'hd';  // Image quality
+  style?: 'natural' | 'vivid';  // Image style
+  response_format?: 'url' | 'b64_json';  // Response format
+  user?: string;  // End-user identifier
+}
+
+interface OpenAiImageObject {
+  url?: string;
+  b64_json?: string;
+  revised_prompt?: string;
+}
+
+interface OpenAiImageGenerationRes {
+  created: number;
+  data: OpenAiImageObject[];
+  model: string;
+}
+
+/**
  * Embeddings
  */
 interface OpenAiEmbeddingReq {
@@ -340,6 +366,7 @@ type CfModelTaskName =
   | "Automatic Speech Recognition"
   | "Image-to-Text"
   | "Image Classification"
+  | "Image Generation"
   | "Translation"
   | "Text Embeddings"
   | "Summarization";

@@ -52,6 +52,12 @@ export const textGenerationModels: ModelType[] = [{
 	description: "Qwen3 30B model with fp8 quantization, optimized for tool calling and agentic workflows.",
 }, {
 	...commonProps,
+	id: "@cf/zai-org/glm-4.7-flash#text-generation",
+	name: "@cf/zai-org/glm-4.7-flash",
+	object: "model",
+	description: "GLM-4.7-Flash is a lightweight, high-speed language model optimized for tool calling and function execution.",
+}, {
+	...commonProps,
 	id: "@hf/mistral/mistral-7b-instruct-v0.2#text-generation",
 	name: "@hf/mistral/mistral-7b-instruct-v0.2",
 	object: "model",
@@ -64,4 +70,13 @@ export const textGenerationModels: ModelType[] = [{
 	object: "model",
 	description: "BAAI general embedding (Base) model that transforms any given text into a 768-dimensional vector.",
 	taskDescription: "<b>Note some tools recognize the embeddings models by their name end the word 'embedding'.</b> Feature extraction models transform raw data into numerical features that can be processed while preserving the information in the original dataset. These models are ideal as part of building vector search applications or Retrieval Augmented Generation workflows with Large Language Models (LLM)."
+}, {
+	...commonProps,
+	id: "@cf/black-forest-labs/flux-2-klein-9b#text-to-image",
+	name: "@cf/black-forest-labs/flux-2-klein-9b",
+	object: "model",
+	taskName: "Image Generation",
+	taskDescription: "Image generation model that creates images from text descriptions.",
+	description: "Black Forest Labs Flux 2 Klein 9B - a lightweight text-to-image generation model for high-quality image creation.",
+	inUse: true
 }];

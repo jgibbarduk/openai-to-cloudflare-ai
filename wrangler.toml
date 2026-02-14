@@ -8,6 +8,7 @@ binding = "AI"
 
 [vars]
 DEFAULT_AI_MODEL = "@cf/meta/llama-3-8b-instruct"
+# Note: API_KEY is set as a secret in Cloudflare dashboard, not here
 
 [[kv_namespaces]]
 binding = "CACHE"
