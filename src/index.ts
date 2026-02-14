@@ -36,95 +36,21 @@
  * ============================================================================
  */
 
-import { textGenerationModels } from "./models";
+// Import handlers
+import { handleHealth } from './handlers/health.handler';
+import { handleListModels } from './handlers/models.handler';
+import { handleEmbeddings } from './handlers/embeddings.handler';
+import { handleImageGeneration } from './handlers/image.handler';
+import { handleAssistants } from './handlers/assistants.handler';
+import { handleThreads } from './handlers/threads.handler';
+import { handleResponses } from './handlers/responses.handler';
 
-// Version for deployment tracking
-const PROXY_VERSION = "1.9.30"; // Updated: 2026-02-14 - FIX: Use multipart/form-data for Cloudflare image generation API
-
-let globalModels: ModelType[] = [];
-
-// Models that support reasoning_content field (thinking/reasoning process)
-// Standard models (gpt-4, gpt-4o, gpt-3.5-turbo) should NOT include reasoning_content
-const REASONING_MODELS = [
-  'o1-preview',
-  'o1-mini',
-  'o3-mini',
-  'o1',
-  'o3',
-  'gpt-5',  // gpt-5 alias maps to GLM-4.7-flash with reasoning support
-  'glm-4',  // GLM-4.7-flash supports reasoning_content
-  'qwen'    // Qwen models support reasoning_content
-];
-
-// Models that support tool calling in Cloudflare Workers AI
-// NOTE: Llama models output tool calls as plain text JSON, not structured tool_calls
-// NOTE: GPT-OSS does NOT support tools on Cloudflare Workers AI (platform limitation)
-// NOTE: Mistral Small 3.1 claims to support tools but actually ignores them and generates text
-const TOOL_CAPABLE_MODELS = [
-  // Llama models removed - they output JSON text instead of proper tool_calls structure
-  // '@cf/meta/llama-3.3-70b-instruct-fp8-fast',
-  // '@cf/meta/llama-3-70b-instruct',
-  '@hf/nousresearch/hermes-2-pro-mistral-7b',
-  // ❌ GPT-OSS REMOVED - Cloudflare Workers AI does NOT support tools for GPT-OSS
-  // '@cf/openai/gpt-oss-20b',
-  // '@cf/openai/gpt-oss-120b',
-  // Mistral Small 3.1 removed - returns empty tool_calls array even when tools are sent
-  // '@cf/mistralai/mistral-small-3.1-24b-instruct',
-  '@cf/qwen/qwen3-30b-a3b-fp8',  // ✅ Qwen properly supports function calling
-  '@cf/zai-org/glm-4.7-flash',  // ✅ GLM-4 supports function calling
-];
-
-// GPT-OSS models use a different input format (instructions + input instead of messages)
-const GPT_OSS_MODELS = [
-  '@cf/openai/gpt-oss-20b',
-  '@cf/openai/gpt-oss-120b',
-];
-
-// Model aliases for Onyx compatibility (maps OpenAI model names to CF models)
-const MODEL_ALIASES: Record<string, string> = {
-  // Use Qwen for GPT-4 aliases since it properly supports function calling
-  'gpt-4': '@cf/qwen/qwen3-30b-a3b-fp8',
-  'gpt-4-turbo': '@cf/qwen/qwen3-30b-a3b-fp8',
-  'gpt-4o': '@cf/qwen/qwen3-30b-a3b-fp8',
-  'gpt-4o-mini': '@cf/meta/llama-3-8b-instruct',  // Smaller model for simple tasks
-  'gpt-5': '@cf/zai-org/glm-4.7-flash',  // ✅ GLM-4.7-Flash with reasoning and tool calling
-  'gpt-3.5-turbo': '@cf/meta/llama-3-8b-instruct',
-  'gpt-3.5-turbo-16k': '@cf/meta/llama-3-8b-instruct',
-  'mistral-small': '@cf/mistralai/mistral-small-3.1-24b-instruct',  // ✅ NEW: Mistral Small with 128K context
-  'mistral': '@cf/mistralai/mistral-small-3.1-24b-instruct',  // Alias for mistral-small
-  'glm-4-flash': '@cf/zai-org/glm-4.7-flash',  // ✅ GLM-4 Flash alias
-  'glm-4.7-flash': '@cf/zai-org/glm-4.7-flash',  // ✅ GLM-4.7 Flash alias
-  'gpt-image-1': '@cf/black-forest-labs/flux-2-klein-9b',  // ✅ NEW: Maps OpenAI image model to Flux
-  'dall-e-3': '@cf/black-forest-labs/flux-2-klein-9b',  // Alternative alias for image generation
-  'dall-e-2': '@cf/black-forest-labs/flux-2-klein-9b',  // Alternative alias for image generation
-  'text-embedding-ada-002': '@cf/baai/bge-base-en-v1.5',
-  'text-embedding-3-small': '@cf/baai/bge-base-en-v1.5',
-  'text-embedding-3-large': '@cf/baai/bge-large-en-v1.5',
-};
-
-// Model-specific max_tokens limits
-// Cloudflare models have different maximum token limits
-const MODEL_MAX_TOKENS: Record<string, number> = {
-  // Hermes 2 Pro has a strict 1024 token limit
-  '@hf/nousresearch/hermes-2-pro-mistral-7b': 1024,
-  // Qwen3 can handle up to 4096
-  '@cf/qwen/qwen3-30b-a3b-fp8': 4096,
-  // GLM-4.7-Flash can handle up to 131,072
-  '@cf/zai-org/glm-4.7-flash': 131072,
-  // Llama 3.3 can handle up to 4096
-  '@cf/meta/llama-3.3-70b-instruct-fp8-fast': 4096,
-  '@cf/meta/llama-3-70b-instruct': 4096,
-  '@cf/meta/llama-3-8b-instruct': 4096,
-  // Mistral Small 3.1 can handle more
-  '@cf/mistralai/mistral-small-3.1-24b-instruct': 4096,
-  // GPT-OSS models
-  '@cf/openai/gpt-oss-20b': 4096,
-  '@cf/openai/gpt-oss-120b': 4096,
-  // Flux image generation
-  '@cf/black-forest-labs/flux-2-klein-9b': 512,  // For image generation, max_tokens isn't used the same way
-  '@cf/black-forest-labs/flux-2-dev': 512,  // Alternative Flux model
-  '@cf/black-forest-labs/flux-2-klein-4b': 512,  // Smaller Flux model
-};
+// Import helpers and utilities
+import { PROXY_VERSION, REASONING_MODELS, TOOL_CAPABLE_MODELS, GPT_OSS_MODELS, MODEL_MAX_TOKENS } from './constants';
+import { errorResponse } from './errors';
+import { displayModelsInfo, getCfModelName, listAIModels } from './model-helpers';
+import { getRandomId, mapTemperatureToCloudflare, mapTools } from './utils';
+import { validateAndNormalizeRequest, transformChatCompletionRequest } from './transformers/request.transformer';
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -134,7 +60,7 @@ export default {
 
     // Health endpoint - no auth required
     if (url.pathname === '/health' && request.method === 'GET') {
-      return this.handleHealth(env);
+      return handleHealth(env);
     }
 
     // Authorization check
@@ -170,11 +96,11 @@ export default {
       if (providedKey !== env.API_KEY) {
         // Allow unauthenticated access to /models/search for debugging
         if (url.pathname === '/models/search' && request.method === 'GET') {
-          return this.displayModelsInfo(env, request);
+          return displayModelsInfo(env, request);
         }
 
         console.error(`[Auth] Authentication failed - key mismatch`);
-        return this.errorResponse(
+        return errorResponse(
           "Invalid authentication credentials",
           401,
           "invalid_api_key"
@@ -190,28 +116,28 @@ export default {
       let response: Response;
       switch (true) {
         case url.pathname === '/v1/models' && request.method === 'GET':
-          response = await this.handleListModels(env);
+          response = await handleListModels(env);
           break;
         case url.pathname === '/v1/chat/completions' && request.method === 'POST':
           response = await this.handleChatCompletions(request, env);
           break;
         case url.pathname === '/v1/responses' && request.method === 'POST':
-          response = await this.handleResponses(request, env);
+          response = await handleResponses(request, env);
           break;
         case url.pathname === '/v1/images/generations' && request.method === 'POST':
-          response = await this.handleImageGeneration(request, env);
+          response = await handleImageGeneration(request, env);
           break;
         case url.pathname === '/v1/embeddings' && request.method === 'POST':
-          response = await this.handleEmbeddings(request, env);
+          response = await handleEmbeddings(request, env);
           break;
         case url.pathname.startsWith('/v1/assistants'):
-          response = await this.handleAssistants(request, env, url);
+          response = await handleAssistants(request, env, url);
           break;
         case url.pathname.startsWith('/v1/threads'):
-          response = await this.handleThreads(request, env, url);
+          response = await handleThreads(request, env, url);
           break;
         default:
-          response = this.errorResponse("Not found", 404, "not_found_error");
+          response = errorResponse("Not found", 404, "not_found_error");
       }
 
       const latency = Date.now() - startTime;
@@ -219,7 +145,7 @@ export default {
       return response;
     } catch (error) {
       console.error(`[${new Date().toISOString()}] Unhandled error:`, error);
-      return this.errorResponse(
+      return errorResponse(
         "Internal server error",
         500,
         "api_error",
@@ -228,49 +154,6 @@ export default {
     }
   },
 
-  /**
-   * Health check endpoint for monitoring
-   */
-  async handleHealth(env: Env): Promise<Response> {
-    const health: { status: string; timestamp: string; providers: { workers_ai: string } } = {
-      status: "ok",
-      timestamp: new Date().toISOString(),
-      providers: {
-        workers_ai: "up"
-      }
-    };
-
-    // Optionally check if AI binding is available
-    try {
-      if (env.AI) {
-        health.providers.workers_ai = "up";
-      }
-    } catch {
-      health.providers.workers_ai = "down";
-      health.status = "degraded";
-    }
-
-    return new Response(JSON.stringify(health), {
-      status: health.status === "ok" ? 200 : 503,
-      headers: { 'Content-Type': 'application/json' }
-    });
-  },
-
-  async handleListModels(env: Env) {
-    const models = await this.listAIModels(env);
-
-    // Return OpenAI-compatible model list with minimal fields per specification
-    // Onyx expects: id, object
-    const openaiModels = models.map(m => ({
-      id: m.id || m.name,
-      object: "model"
-    }));
-
-    return new Response(JSON.stringify({
-      object: "list",
-      data: openaiModels
-    }), { headers: { 'Content-Type': 'application/json' } });
-  },
 
   async handleChatCompletions(request: Request, env: Env) {
     const startTime = Date.now();
@@ -290,7 +173,7 @@ export default {
       }
 
       // === ONYX COMPATIBILITY: Validate and normalize request ===
-      const validatedData = this.validateAndNormalizeRequest(data, env);
+      const validatedData = validateAndNormalizeRequest(data, env);
 
 
       // QWEN WORKAROUND: Detect if this is a request after tool results (has tool role messages)
@@ -349,7 +232,7 @@ export default {
         console.log("[Chat] QWEN WORKAROUND: Tool messages present but content unclear. Monitoring.");
       }
 
-      const { model, options } = this.transformChatCompletionRequest(validatedData, env);
+      const { model, options } = transformChatCompletionRequest(validatedData, env);
       console.log("Model in use:", model, 'Stream', options?.stream);
 
       // Track the original requested model to return in responses
@@ -390,7 +273,7 @@ export default {
       return this.handleChatCompletionResponse(aiRes, requestedModel, options, startTime, isResponsesApi, validatedData);
     } catch (error) {
       console.error("[Chat] Error:", (error as Error).message, (error as Error).stack);
-      return this.errorResponse(
+      return errorResponse(
         "Chat completion failed",
         500,
         "server_error",
@@ -500,7 +383,7 @@ export default {
       }, model, startTime, isResponsesApi, requestParams);
     } catch (error) {
       console.error("[Chat] Error:", (error as Error).message, (error as Error).stack);
-      return this.errorResponse(
+      return errorResponse(
         "Chat completion failed",
         500,
         "server_error",
@@ -785,372 +668,6 @@ export default {
   },
 
 
-  async handleEmbeddings(request: Request, env: Env): Promise<Response> {
-    try {
-      const data = await request.json() as OpenAiEmbeddingReq;
-      const { model: requestedModel, input, encoding_format } = data;
-      const model = this.getCfModelName(requestedModel, env);
-
-
-      // Validation
-      if (!model || !input) {
-        return this.errorResponse("Model and input are required", 400);
-      }
-
-      // Check if valid embedding model
-      const models = await this.listAIModels(env);
-      const modelInfo = models.find(m =>
-        m.name === model && m.taskName === 'Text Embeddings'
-      );
-      if (!modelInfo) {
-        return this.errorResponse("Invalid embedding model", 400);
-      }
-
-      // Convert OpenAI-style input to Cloudflare's text format
-      const texts = Array.isArray(input) ? input : [input];
-      if (texts.some(t => typeof t !== 'string' || t.length === 0)) {
-        return this.errorResponse("Invalid input format", 400);
-      }
-
-      // Create Cloudflare AI options
-      const options: AiEmbeddingInputOptions = { text: texts };
-
-      // Get embeddings from Cloudflare AI
-      const aiRes = await env.AI.run(model, options);
-
-      if (!('data' in aiRes) || !aiRes?.data || !Array.isArray(aiRes.data)) {
-        return this.errorResponse("Failed to generate embeddings", 500);
-      }
-
-      // Convert to OpenAI format
-      const embeddings: OpenAiEmbeddingObject[] = aiRes.data.map((vector, index) => ({
-        object: 'embedding',
-        index,
-        embedding: encoding_format === 'base64'
-          ? this.floatArrayToBase64(vector)
-          : vector
-      }));
-
-      // Estimate token usage (approximate)
-      const promptTokens = texts.join(' ').split(/\s+/).length;
-
-      return new Response(JSON.stringify({
-        object: 'list',
-        data: embeddings,
-        model: requestedModel, // Return the requested model name (e.g., text-embedding-ada-002)
-        usage: {
-          prompt_tokens: promptTokens,
-          total_tokens: promptTokens
-        }
-      } as OpenAiEmbeddingRes), {
-        headers: { 'Content-Type': 'application/json' }
-      });
-
-    } catch (error) {
-      return this.errorResponse("Embedding failed", 500, (error as Error).message);
-    }
-  },
-
-  async handleImageGeneration(request: Request, env: Env): Promise<Response> {
-    try {
-      const data = await request.json() as OpenAiImageGenerationReq;
-      const { model: requestedModel, prompt, n = 1, response_format = 'url', size } = data;
-      const model = this.getCfModelName(requestedModel, env);
-
-      console.log(`[Image] Request to generate image with model: ${model}, prompt length: ${prompt?.length || 0}`);
-
-      // Validation
-      if (!model || !prompt) {
-        return this.errorResponse("Model and prompt are required", 400);
-      }
-
-      // Check if valid image generation model
-      // Accept models that contain 'flux', 'dall-e', 'stable-diffusion', or 'gpt-image'
-      const isImageModel = model.includes('flux') ||
-                          model.includes('dall-e') ||
-                          model.includes('stable-diffusion') ||
-                          model.includes('gpt-image') ||
-                          requestedModel.includes('dall-e') ||
-                          requestedModel.includes('gpt-image');
-
-      if (!isImageModel) {
-        console.log(`[Image] Model ${model} is not recognized as an image generation model`);
-        return this.errorResponse("Invalid image generation model - must be a Flux, DALL-E, or image generation model", 400);
-      }
-
-      console.log(`[Image] Model ${model} recognized as image generation model - proceeding`);
-
-      console.log(`[Image] Calling Cloudflare AI.run with model ${model}`);
-
-      // Cloudflare image generation models require specific format
-      // For Flux: { prompt: string } or with width/height
-      const imageInput: any = { prompt };
-
-      // Parse size and add width/height if provided
-      if (size) {
-        const [width, height] = size.split('x').map(s => parseInt(s.trim()));
-        if (width && height) {
-          imageInput.width = width;
-          imageInput.height = height;
-          console.log(`[Image] Setting size: ${width}x${height}`);
-        }
-      }
-
-      let aiRes;
-      try {
-        console.log(`[Image] Calling Cloudflare AI.run with model ${model}`);
-
-        // Cloudflare Workers AI binding for image generation
-        // According to the error, it expects inputs in a specific format
-        // For Flux models, the binding expects: @cf-ai-run(model, inputs)
-        // where inputs = { prompt, width?, height?, num_steps?, guidance? }
-
-        console.log(`[Image] Input object:`, JSON.stringify(imageInput).substring(0, 200));
-
-        // Call the AI binding directly with the prompt and size parameters
-        aiRes = await env.AI.run(model as any, imageInput);
-
-        console.log(`[Image] AI.run completed, response type: ${typeof aiRes}`);
-      } catch (error: any) {
-        const errorMsg = (error as Error).message;
-        const errorType = error?.constructor?.name || typeof error;
-
-        console.error(`[Image] Failed to call Cloudflare AI with model ${model}`);
-        console.error(`[Image] Error type: ${errorType}`);
-        console.error(`[Image] Error message: ${errorMsg}`);
-
-        // Check if it's an authentication error
-        if (errorMsg.includes('AuthenticationError') || errorMsg.includes('authentication') || errorMsg.includes('unauthorized') || errorMsg.includes('401') || errorMsg.includes('403')) {
-          console.error(`[Image] Authentication error - check Cloudflare Workers AI credentials and account permissions`);
-          return this.errorResponse(
-            "Authentication failed for image generation - check Cloudflare account permissions",
-            401,
-            "authentication_error",
-            "Cloudflare Workers AI authentication failed"
-          );
-        }
-
-        // Check if model is not found
-        if (errorMsg.includes('not found') || errorMsg.includes('404') || errorMsg.includes('does not exist')) {
-          console.error(`[Image] Model not found in Cloudflare Workers AI`);
-          return this.errorResponse(
-            "Image generation model not available",
-            404,
-            "model_not_found",
-            `Model ${model} not found in Cloudflare Workers AI`
-          );
-        }
-
-        // Re-throw for generic error handling
-        throw error;
-      }
-
-      console.log(`[Image] Response type: ${typeof aiRes}, is ReadableStream: ${aiRes instanceof ReadableStream}`);
-
-      // Debug: Log the full response structure
-      if (typeof aiRes === 'object' && aiRes !== null && !(aiRes instanceof ReadableStream)) {
-        console.log(`[Image] Full aiRes object:`, JSON.stringify(aiRes, null, 2).substring(0, 500));
-      }
-
-      // Cloudflare Flux returns image data in various formats
-      // Usually as a Uint8Array or ArrayBuffer that needs to be converted to base64
-      let imageData: string = '';
-
-      if (aiRes instanceof ReadableStream) {
-        // Handle streaming response
-        console.log(`[Image] Response is a ReadableStream, reading chunks...`);
-        const reader = aiRes.getReader();
-        const chunks: Uint8Array[] = [];
-        let result;
-        while (!(result = await reader.read()).done) {
-          chunks.push(result.value);
-        }
-        const fullData = new Uint8Array(chunks.reduce((acc, chunk) => acc + chunk.length, 0));
-        let offset = 0;
-        for (const chunk of chunks) {
-          fullData.set(chunk, offset);
-          offset += chunk.length;
-        }
-        // Convert to base64
-        const bytes = Array.from(fullData);
-        imageData = btoa(String.fromCharCode(...bytes));
-        console.log(`[Image] Converted stream to base64, length: ${imageData.length}`);
-      } else if (aiRes instanceof Uint8Array || aiRes instanceof ArrayBuffer) {
-        // Binary data - convert to base64
-        const bytes = aiRes instanceof Uint8Array ? Array.from(aiRes) : Array.from(new Uint8Array(aiRes));
-        imageData = btoa(String.fromCharCode(...bytes));
-        console.log(`[Image] Converted binary data to base64, length: ${imageData.length}`);
-      } else if (typeof aiRes === 'string') {
-        // Direct string response (already base64 or URL)
-        imageData = aiRes;
-        console.log(`[Image] Response is string, length: ${imageData.length}`);
-      } else if (typeof aiRes === 'object' && aiRes !== null) {
-        // Object response - Flux typically returns { image: Uint8Array } or { image: base64string }
-        console.log(`[Image] Response is object with keys: ${Object.keys(aiRes).join(', ')}`);
-
-        if ('image' in aiRes) {
-          const imgData = (aiRes as any).image;
-          if (imgData instanceof Uint8Array || imgData instanceof ArrayBuffer) {
-            // Binary image data
-            const bytes = imgData instanceof Uint8Array ? Array.from(imgData) : Array.from(new Uint8Array(imgData));
-            imageData = btoa(String.fromCharCode(...bytes));
-            console.log(`[Image] Extracted binary image from 'image' field, converted to base64`);
-          } else if (typeof imgData === 'string') {
-            imageData = imgData;
-            console.log(`[Image] Extracted string image from 'image' field`);
-          }
-        } else if ('data' in aiRes && typeof (aiRes as any).data === 'string') {
-          imageData = (aiRes as any).data;
-          console.log(`[Image] Extracted from 'data' field`);
-        } else if ('result' in aiRes && typeof (aiRes as any).result === 'string') {
-          imageData = (aiRes as any).result;
-          console.log(`[Image] Extracted from 'result' field`);
-        } else {
-          console.error(`[Image] Unexpected response format:`, JSON.stringify(aiRes).substring(0, 300));
-          console.error(`[Image] Response does not contain image data in expected fields`);
-          return this.errorResponse(
-            "Image generation returned unexpected format - no image data found",
-            500,
-            "unexpected_response",
-            `Response contained: ${Object.keys(aiRes).join(', ')}`
-          );
-        }
-      }
-
-      console.log(`[Image] Final image data length: ${imageData.length} chars, starts with: ${imageData.substring(0, 20)}`);
-
-      // Ensure we have image data
-      if (!imageData || imageData.length === 0) {
-        console.error(`[Image] No image data generated`);
-        return this.errorResponse("Failed to generate image - no data returned", 500);
-      }
-
-      // Format response based on request
-      const imageObject: OpenAiImageObject = {};
-
-      if (response_format === 'b64_json') {
-        // Return base64-encoded image
-        if (imageData.startsWith('data:image')) {
-          // Extract base64 part if it's a data URL
-          imageObject.b64_json = imageData.split(',')[1];
-        } else if (imageData.startsWith('/9j/') || imageData.startsWith('iVBORw0KGgo')) {
-          // Already base64
-          imageObject.b64_json = imageData;
-        } else {
-          // Assume it needs encoding
-          imageObject.b64_json = btoa(imageData);
-        }
-      } else {
-        // Return as URL (even though we have base64, return it as a data URL for now)
-        if (imageData.startsWith('data:image')) {
-          imageObject.url = imageData;
-        } else if (imageData.startsWith('/9j/') || imageData.startsWith('iVBORw0KGgo')) {
-          // Base64 - convert to data URL
-          imageObject.url = 'data:image/png;base64,' + imageData;
-        } else {
-          imageObject.url = imageData;
-        }
-      }
-
-      // NOTE: We intentionally don't include revised_prompt here
-      // because some models (like GLM-4) see it and incorrectly think
-      // the image generation failed and only a prompt was returned.
-      // The actual image URL/b64 is what matters for tool results.
-
-      const responseData = {
-        created: Math.floor(Date.now() / 1000),
-        data: Array(n).fill(null).map((_, i) => ({
-          ...imageObject,
-          // For multiple images, we'd need to generate n times
-          // For now, we return the same image n times
-        })),
-        model: requestedModel  // Return the requested model name to Onyx
-      };
-
-      console.log(`[Image] Response data keys:`, Object.keys(responseData));
-      console.log(`[Image] Image object keys:`, Object.keys(imageObject));
-      console.log(`[Image] Has url:`, 'url' in imageObject);
-      console.log(`[Image] Has b64_json:`, 'b64_json' in imageObject);
-      console.log(`[Image] Has revised_prompt:`, 'revised_prompt' in imageObject);
-
-      return new Response(JSON.stringify(responseData as OpenAiImageGenerationRes), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' }
-      });
-
-    } catch (error) {
-      console.error(`[Image] Error:`, error);
-      return this.errorResponse("Image generation failed", 500, (error as Error).message);
-    }
-  },
-
-  async handleAssistants(request: Request, env: Env, url: URL) {
-    try {
-      if (url.pathname.endsWith('/assistants')) {
-        switch (request.method) {
-          case 'POST':
-            return this.createAssistant(request, env);
-          case 'GET':
-            return this.listAssistants(env);
-          default:
-            return this.errorResponse("Method not allowed", 405);
-        }
-      }
-
-      const assistantId = url.pathname.split('/').pop() || '';
-      assistantId && this.testAssistantId(assistantId);
-
-      switch (request.method) {
-        case 'GET':
-          return this.retrieveAssistant(env, assistantId);
-        case 'POST':
-          return this.modifyAssistant(request, env, assistantId);
-        case 'DELETE':
-          return this.deleteAssistant(env, assistantId);
-        default:
-          return this.errorResponse("Method not allowed", 405);
-      }
-    } catch (error) {
-      return this.errorResponse("Assistant operation failed", 500, (error as Error).message);
-    }
-  },
-
-  async handleThreads(request: Request, env: Env, url: URL) {
-    try {
-      if (url.pathname.endsWith('/runs')) {
-        const threadId = url.pathname.split('/').at(-2) || '';
-        this.testThreadId(threadId);
-        return this.handleThreadRuns(request, env, threadId);
-      }
-
-      if (url.pathname.endsWith('/threads')) {
-        switch (request.method) {
-          case 'POST':
-            return this.createThread(request, env);
-          case 'GET':
-            return this.listThreads(env);
-          default:
-            return this.errorResponse("Method not allowed", 405);
-        }
-      }
-
-      const threadId = url.pathname.split('/').pop() || '';
-      this.testThreadId(threadId);
-
-      switch (request.method) {
-        case 'GET':
-          return this.retrieveThread(env, threadId);
-        case 'POST':
-          return this.modifyThread(request, env, threadId);
-        case 'DELETE':
-          return this.deleteThread(env, threadId);
-        default:
-          return this.errorResponse("Method not allowed", 405);
-      }
-    } catch (error) {
-      return this.errorResponse("Thread operation failed", 500, (error as Error).message);
-    }
-  },
 
   /**
    * Validate and normalize OpenAI request for Onyx compatibility
@@ -1345,7 +862,7 @@ export default {
     const encoder = new TextEncoder();
     const decoder = new TextDecoder();
     const timestamp = Date.now();
-    const system_fingerprint = `fp_${this.getRandomId()}`;
+    const system_fingerprint = `fp_${getRandomId()}`;
 
     // Use correct ID prefix and object type based on endpoint
     const idPrefix = isResponsesEndpoint ? "resp" : "chatcmpl";
@@ -2045,7 +1562,7 @@ export default {
     if (toolCalls && toolCalls.length > 0) {
       console.log("[Builder] Transforming tool_calls to OpenAI format");
       openaiToolCalls = toolCalls.map((tc) => ({
-        id: `call_${this.getRandomId()}`,
+        id: `call_${getRandomId()}`,
         type: "function",
         function: {
           name: tc.name,
@@ -2088,7 +1605,7 @@ export default {
         completion_tokens: 0,
         total_tokens: 0
       },
-      system_fingerprint: `fp_${this.getRandomId()}`
+      system_fingerprint: `fp_${getRandomId()}`
     };
 
     console.log(`[Builder] Built response for model ${model}: content_length=${finalContent?.length || 0}, tool_calls=${openaiToolCalls?.length || 0}, finish_reason=${response.choices[0].finish_reason}, usage=${JSON.stringify(usage)}`);
@@ -2124,8 +1641,8 @@ export default {
     }
 
     const createdAt = Math.floor(Date.now() / 1000);
-    const responseId = `resp_${this.getRandomId()}`;
-    const messageId = `msg_${this.getRandomId()}`;
+    const responseId = `resp_${getRandomId()}`;
+    const messageId = `msg_${getRandomId()}`;
 
     // ✅ Build output items array
     const outputItems: any[] = [];
@@ -2152,7 +1669,7 @@ export default {
       // Transform Cloudflare tool calls to OpenAI Responses API format
       const toolCallItems = toolCalls.map((tc: any) => ({
         type: "function_call",
-        id: `call_${this.getRandomId()}`,
+        id: `call_${getRandomId()}`,
         status: "completed",
         function: {
           name: tc.name,
@@ -2384,213 +1901,6 @@ export default {
     return model;
   },
 
-  /**
-   * Generate an OpenAI-compatible error response
-   * @param message Human-readable error message
-   * @param statusCode HTTP status code
-   * @param errorType OpenAI error type (e.g., 'invalid_request_error')
-   * @param errorDetails Optional additional error details
-   * @returns A Response object with proper error format
-   */
-  errorResponse(
-    message: string,
-    statusCode: number = 500,
-    errorType: string = "api_error",
-    errorDetails?: string
-  ): Response {
-    const errorObject = {
-      object: "error",
-      message,
-      type: errorType,
-      param: null,
-      code: errorType,
-      ...(errorDetails && { details: errorDetails })
-    };
-
-    console.error(`[Error] ${statusCode} ${errorType}: ${message}${errorDetails ? ' - ' + errorDetails : ''}`);
-
-    return new Response(JSON.stringify({ error: errorObject }), {
-      status: statusCode,
-      headers: {
-        "Content-Type": "application/json",
-      },
-    });
-  },
-
-  transformChatCompletionRequest(request: OpenAiChatCompletionReq, env: Env): AiChatRequestParts {
-    // Base options common to both prompt and messages formats
-    const requestedMaxTokens = request.max_completion_tokens ?? request.max_tokens ?? 16384;
-
-    // Get the resolved model FIRST to determine its max_tokens limit
-    let resolvedModel = this.getCfModelName(request?.model, env);
-    const modelMaxTokensLimit = MODEL_MAX_TOKENS[resolvedModel] || 4096;  // Default to 4096 if not specified
-
-    // IMPORTANT: Cloudflare Workers AI has model-specific limits:
-    // - Hermes 2 Pro: max 1024 tokens
-    // - Qwen3, Llama: max 4096 tokens
-    // - Context window: 32768 tokens (prompt + completion combined)
-    //
-    // For reasoning models like Qwen, enforce a minimum to ensure enough budget
-    const isReasoningModel = resolvedModel.includes('qwen');
-    const MIN_TOKENS_FOR_REASONING = isReasoningModel ? 4096 : modelMaxTokensLimit;
-
-    // Clamp to model's specific limit
-    const maxTokens = Math.max(Math.min(requestedMaxTokens, modelMaxTokensLimit),
-                               Math.min(MIN_TOKENS_FOR_REASONING, modelMaxTokensLimit));
-
-    if (maxTokens !== requestedMaxTokens) {
-      console.log(`[Transform] Adjusted max_tokens from ${requestedMaxTokens} to ${maxTokens} (model ${resolvedModel} has limit: ${modelMaxTokensLimit})`);
-    }
-
-    const baseOptions: AiBaseInputOptions = {
-      stream: request.stream ?? undefined,
-      max_tokens: maxTokens,
-      temperature: this.mapTemperatureToCloudflare(request?.temperature ?? undefined),
-      top_p: request.top_p ?? undefined,
-      seed: request.seed ?? undefined,
-      repetition_penalty: undefined, // Not directly mapped
-      frequency_penalty: request.frequency_penalty ?? undefined,
-      presence_penalty: request.presence_penalty ?? undefined
-    };
-
-    console.log(`[Transform] max_tokens: ${baseOptions.max_tokens} (from request: ${request.max_tokens || request.max_completion_tokens || 'not specified'})`);
-
-    // Get tool capability status (resolvedModel already declared above)
-    const isGptOss = GPT_OSS_MODELS.some(m => resolvedModel.includes(m) || m.includes(resolvedModel));
-    const isLlama = resolvedModel.includes('llama');
-
-    // ✅ FIX 3: Auto-route GPT-OSS to Qwen when tools are requested
-    // GPT-OSS does NOT support tools on Cloudflare Workers AI (platform limitation)
-    if (isGptOss && request.tools && request.tools.length > 0) {
-      console.warn(`[GPT-OSS] Tools requested → auto-switching to Qwen for tool support`);
-      console.log(`[GPT-OSS] Routing to @cf/qwen/qwen3-30b-a3b-fp8 (supports tools)`);
-      resolvedModel = '@cf/qwen/qwen3-30b-a3b-fp8';
-      // Continue with Qwen processing (fall through to standard messages path)
-    }
-
-    // Re-check isGptOss after potential model switch
-    const finalIsGptOss = GPT_OSS_MODELS.some(m => resolvedModel.includes(m) || m.includes(resolvedModel));
-
-    // Auto-switch Llama to Qwen when tools are requested
-    // Llama models output tool calls as plain text JSON instead of structured tool_calls
-    if (isLlama && request.tools && request.tools.length > 0) {
-      console.warn(`[Llama] Tools requested but Llama outputs tool calls as plain text JSON`);
-      console.log(`[Llama] Auto-switching to @cf/qwen/qwen3-30b-a3b-fp8 for proper tool support`);
-      resolvedModel = '@cf/qwen/qwen3-30b-a3b-fp8';
-      // Fall through to use standard messages transformation with Qwen
-    }
-
-    // ✅ FIX 2: Hard-code GPT-OSS → supportsTools = false
-    // Check tool support AFTER model switching (critical!)
-    // GPT-OSS never supports tools, even if in TOOL_CAPABLE_MODELS by mistake
-    const supportsTools = !finalIsGptOss && TOOL_CAPABLE_MODELS.some(m => resolvedModel.includes(m) || m.includes(resolvedModel));
-
-    // Log tool support status
-    if (request.tools && request.tools.length > 0) {
-      console.log(`[Transform] Request includes ${request.tools.length} tools`);
-      console.log(`[Transform] Model ${resolvedModel} supports tools: ${supportsTools}`);
-    }
-
-    // Map tools AFTER model switching and support check
-    const mappedTools = supportsTools && request.tools ? this.mapTools(request.tools) : undefined;
-
-    if (mappedTools) {
-      console.log(`[Transform] Mapped ${mappedTools.length} tools for ${resolvedModel}`);
-    }
-
-    // GPT-OSS models - use standard messages format (NOT Harmony instructions/input)
-    // Cloudflare Workers AI requires: prompt, messages, or requests
-    if (finalIsGptOss) {
-      console.log(`[Transform] GPT-OSS model detected: ${resolvedModel}`);
-      console.log(`[GPT-OSS] Using standard messages format (CF AI requirement)`);
-
-      // ⚠️  CRITICAL: Disable streaming for GPT-OSS
-      // GPT-OSS streaming can be unreliable
-      if (baseOptions.stream) {
-        console.log(`[GPT-OSS] DISABLED streaming for GPT-OSS (stability)`);
-        baseOptions.stream = false;
-      }
-
-      // Transform messages - same as other models but without tools
-      const transformedMessages = request.messages.map((msg: any) => {
-        const baseMsg: any = {
-          role: msg.role,
-          content: msg.content ?? ""
-        };
-        return baseMsg;
-      });
-
-      // GPT-OSS is TEXT-ONLY on Cloudflare Workers AI - no tool support
-      const gptOssOptions: any = {
-        ...baseOptions,
-        messages: transformedMessages,
-        temperature: baseOptions.temperature ? Math.min(baseOptions.temperature, 1.0) : 0.7,
-      };
-
-      console.log(`[GPT-OSS] Messages count:`, transformedMessages.length);
-
-      return {
-        model: resolvedModel,
-        options: gptOssOptions
-      };
-    }
-
-    // Standard messages interface for other models
-    // CRITICAL: Properly handle tool calls and tool results in message history
-    const transformedMessages = request.messages.map((msg: any) => {
-      const baseMsg: any = {
-        role: msg.role,
-        content: msg.content ?? "" // Extra safety: ensure content is never undefined
-      };
-
-      // Preserve tool_calls if present (from assistant messages)
-      if (msg.tool_calls && Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) {
-        baseMsg.tool_calls = msg.tool_calls;
-        // When tool_calls are present, content should be empty or null per OpenAI spec
-        if (!msg.content) {
-          baseMsg.content = "";
-        }
-      }
-
-      // Handle tool result messages (role: "tool")
-      if (msg.role === 'tool' && msg.tool_call_id) {
-        baseMsg.tool_call_id = msg.tool_call_id;
-        // Tool messages must have content
-        if (!baseMsg.content) {
-          baseMsg.content = "";
-        }
-      }
-
-      return baseMsg;
-    });
-
-    const options: AiMessagesInputOptions = {
-      ...baseOptions,
-      messages: transformedMessages,
-      // Only include tools if model supports them
-      ...(supportsTools && mappedTools && { tools: mappedTools }),
-      // Only include tool_choice if model supports tools
-      ...(supportsTools && request.tool_choice ? { tool_choice: request.tool_choice } :
-        supportsTools && request.function_call ? { tool_choice: request.function_call } : {})
-    };
-
-    // Handle response format constraints
-    if (typeof request.response_format === 'object' && 'type' in request.response_format
-      && request.response_format?.type === 'json_object') {
-      options.messages = [
-        ...options.messages,
-        {
-          role: 'system',
-          content: 'Respond using JSON format'
-        }
-      ];
-    }
-
-    return {
-      model: resolvedModel,
-      options: options
-    };
-  },
 
   /**
    * Handle /v1/responses endpoint
@@ -2678,7 +1988,7 @@ export default {
 
       // Validate we have at least one message
       if (messages.length === 0) {
-        return this.errorResponse("No input_items, messages, or input provided", 400, "invalid_request_error");
+        return errorResponse("No input_items, messages, or input provided", 400, "invalid_request_error");
       }
 
       // Build OpenAI-compatible request from Responses API parameters
@@ -2696,10 +2006,10 @@ export default {
       };
 
       // Validate and normalize for Onyx compatibility
-      const validatedData = this.validateAndNormalizeRequest(openaiRequest, env);
+      const validatedData = validateAndNormalizeRequest(openaiRequest, env);
 
       // Transform to Cloudflare format
-      const { model, options } = this.transformChatCompletionRequest(validatedData, env);
+      const { model, options } = transformChatCompletionRequest(validatedData, env);
       console.log("[Responses] Model in use:", model, 'Stream:', options?.stream);
 
       // Log tools being sent to Cloudflare (for debugging)
@@ -2722,7 +2032,7 @@ export default {
 
     } catch (error) {
       console.error(`[Responses] Error:`, error);
-      return this.errorResponse(
+      return errorResponse(
         "Response generation failed",
         500,
         "api_error",
@@ -2731,52 +2041,5 @@ export default {
     }
   },
 
-  /**
-   * Maps OpenAI temperature to Cloudflare format
-   * OpenAI uses 0-2, Cloudflare uses similar scale
-   * @param temperature OpenAI temperature value
-   * @returns Cloudflare-compatible temperature
-   */
-  mapTemperatureToCloudflare(temperature: number | undefined): number | undefined {
-    if (temperature === undefined || temperature === null) {
-      return undefined;
-    }
-    // Clamp to valid range [0, 2]
-    const clamped = Math.max(0, Math.min(2, temperature));
-    return clamped;
-  },
-
-  /**
-   * Maps OpenAI tools format to Cloudflare tools format
-   * @param tools Array of OpenAI tool definitions
-   * @returns Array of Cloudflare-compatible tool definitions
-   */
-  mapTools(tools: any[]): any[] {
-    if (!tools || !Array.isArray(tools)) {
-      return [];
-    }
-
-    return tools.map(tool => {
-      if (tool.type === 'function') {
-        return {
-          type: 'function',
-          function: {
-            name: tool.function?.name || '',
-            description: tool.function?.description || '',
-            parameters: tool.function?.parameters || { type: 'object', properties: {} }
-          }
-        };
-      }
-      return tool;
-    });
-  },
-
-  /**
-   * Generates a random ID for use in response objects
-   * @returns A random hex string
-   */
-  getRandomId(): string {
-    return Math.random().toString(16).substring(2, 15) + Math.random().toString(16).substring(2, 15);
-  },
 
 };
