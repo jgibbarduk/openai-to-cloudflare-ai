@@ -164,6 +164,12 @@ function buildChatResponse(
  * Handle streaming chat completions.
  *
  * Transforms Cloudflare AI streaming responses to OpenAI SSE format.
+ * This is a complex handler that needs to:
+ * - Parse Cloudflare's streaming chunks
+ * - Handle tool calls in streaming mode
+ * - Handle reasoning content
+ * - Transform to OpenAI SSE format
+ * - Send proper finish chunks
  */
 export async function handleStreamingResponse(
   stream: ReadableStream,
@@ -175,12 +181,17 @@ export async function handleStreamingResponse(
   const writer = writable.getWriter();
   const encoder = new TextEncoder();
 
+  const requestId = `chatcmpl-${Date.now()}`;
+  const created = Math.floor(Date.now() / 1000);
+
   // Process stream in background
   (async () => {
     try {
       const reader = stream.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
+      let hasSeenFirstChunk = false;
+      let toolCalls: any[] = [];
 
       while (true) {
         const { done, value } = await reader.read();
@@ -194,52 +205,152 @@ export async function handleStreamingResponse(
           if (!line.trim()) continue;
 
           try {
-            const data = line.startsWith('data: ') ? line.slice(6) : line;
-            if (data === '[DONE]') continue;
+            // Parse Cloudflare chunk - could be plain JSON or SSE format
+            let parsed: any;
 
-            const parsed = JSON.parse(data);
+            if (line.startsWith('data: ')) {
+              const data = line.slice(6);
+              if (data === '[DONE]') continue;
+              parsed = JSON.parse(data);
+            } else {
+              parsed = JSON.parse(line);
+            }
 
-            // Transform to OpenAI format
-            const chunk = {
-              id: `chatcmpl-${Date.now()}`,
+            // Extract content based on Cloudflare's response format
+            let content = '';
+            let reasoningContent = '';
+            let toolCallsChunk: any[] | undefined;
+            let finishReason: string | null = null;
+
+            // Format 1: Direct response field
+            if (parsed.response !== undefined) {
+              content = parsed.response || '';
+            }
+            // Format 2: OpenAI-compatible choices array
+            else if (parsed.choices && Array.isArray(parsed.choices) && parsed.choices[0]) {
+              const choice = parsed.choices[0];
+              if (choice.delta?.content) {
+                content = choice.delta.content;
+              }
+              if (choice.delta?.reasoning_content) {
+                reasoningContent = choice.delta.reasoning_content;
+              }
+              if (choice.delta?.tool_calls) {
+                toolCallsChunk = choice.delta.tool_calls;
+              }
+              if (choice.finish_reason) {
+                finishReason = choice.finish_reason;
+              }
+            }
+            // Format 3: content field directly
+            else if (parsed.content !== undefined) {
+              content = parsed.content || '';
+            }
+
+            // Check for reasoning_content at the top level too
+            if (parsed.reasoning_content) {
+              reasoningContent = parsed.reasoning_content;
+            }
+
+            // Handle tool calls accumulation
+            if (toolCallsChunk) {
+              toolCalls.push(...toolCallsChunk);
+            }
+
+            // Build OpenAI-compatible chunk
+            const chunk: any = {
+              id: requestId,
               object: 'chat.completion.chunk',
-              created: Math.floor(Date.now() / 1000),
+              created,
               model,
               choices: [{
                 index: 0,
-                delta: {
-                  role: 'assistant',
-                  content: parsed.response || parsed.content || ''
-                },
-                finish_reason: null
+                delta: {},
+                finish_reason: finishReason
               }]
             };
 
-            await writer.write(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
+            // Add role on very first chunk
+            if (!hasSeenFirstChunk) {
+              chunk.choices[0].delta.role = 'assistant';
+              hasSeenFirstChunk = true;
+            }
+
+            // Add content to delta if we have any
+            if (content) {
+              chunk.choices[0].delta.content = content;
+            }
+
+            // Add reasoning_content if present
+            if (reasoningContent) {
+              chunk.choices[0].delta.reasoning_content = reasoningContent;
+            }
+
+            // Add tool calls if present
+            if (toolCallsChunk && toolCallsChunk.length > 0) {
+              chunk.choices[0].delta.tool_calls = toolCallsChunk;
+            }
+
+            // Only send chunk if it has meaningful data (role, content, reasoning_content, tool_calls, or finish_reason)
+            const hasMeaningfulData =
+              chunk.choices[0].delta.role ||
+              chunk.choices[0].delta.content ||
+              chunk.choices[0].delta.reasoning_content ||
+              chunk.choices[0].delta.tool_calls ||
+              finishReason;
+
+            if (hasMeaningfulData) {
+              await writer.write(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
+            }
+
           } catch (e) {
             console.error('[Chat] Error parsing stream chunk:', e);
           }
         }
       }
 
-      // Send final chunk
+      // Send final chunk with finish_reason
       const finalChunk = {
-        id: `chatcmpl-${Date.now()}`,
+        id: requestId,
         object: 'chat.completion.chunk',
-        created: Math.floor(Date.now() / 1000),
+        created,
         model,
         choices: [{
           index: 0,
           delta: {},
-          finish_reason: 'stop'
+          finish_reason: toolCalls.length > 0 ? 'tool_calls' : 'stop'
         }]
       };
+
       await writer.write(encoder.encode(`data: ${JSON.stringify(finalChunk)}\n\n`));
       await writer.write(encoder.encode('data: [DONE]\n\n'));
       await writer.close();
+
+      console.log('[Chat] Streaming completed successfully');
+
     } catch (error) {
       console.error('[Chat] Streaming error:', error);
-      await writer.abort(error);
+
+      // Try to send an error chunk
+      try {
+        const errorChunk = {
+          id: requestId,
+          object: 'chat.completion.chunk',
+          created,
+          model,
+          choices: [{
+            index: 0,
+            delta: { content: ' ' },
+            finish_reason: 'stop'
+          }]
+        };
+        await writer.write(encoder.encode(`data: ${JSON.stringify(errorChunk)}\n\n`));
+        await writer.write(encoder.encode('data: [DONE]\n\n'));
+      } catch (e) {
+        console.error('[Chat] Failed to send error chunk:', e);
+      }
+
+      await writer.close();
     }
   })();
 

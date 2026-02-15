@@ -292,10 +292,10 @@ export function buildOpenAIResponsesFormat(
   }
 
   // Build reasoning field
-  const reasoning: any = {
-    effort: null,
-    summary: reasoningContent || null
-  };
+  const reasoning: any = reasoningContent ? {
+    content: reasoningContent,
+    summary: 'auto'
+  } : null;
 
   // Calculate reasoning tokens for usage
   const reasoningTokens = reasoningContent ? Math.ceil(reasoningContent.length / 4) : 0;

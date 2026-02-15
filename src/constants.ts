@@ -25,7 +25,7 @@
  * @example
  * console.log(`Starting proxy v${PROXY_VERSION}`);
  */
-export const PROXY_VERSION = "1.9.30"; // Updated: 2026-02-14 - FIX: Use multipart/form-data for Cloudflare image generation API
+export const PROXY_VERSION = "2.1.0"; // Updated: 2026-02-15 - FIX: Responses API streaming format (created_at field, output array)
 
 /**
  * ============================================================================

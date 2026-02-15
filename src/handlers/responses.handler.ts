@@ -20,7 +20,7 @@ import { errorResponse, validationError, serverError } from '../errors';
 import { validateAndNormalizeRequest, transformChatCompletionRequest } from '../transformers/request.transformer';
 import { extractGptOssResponse, extractOpenAiCompatibleResponse, sanitizeAiResponse } from '../parsers/response.parser';
 import { buildOpenAIResponsesFormat } from '../builders/response.builder';
-import { handleStreamingResponse } from './chat.handler';
+import { handleResponsesApiStreaming } from './responses-streaming.handler';
 import type { Env, OpenAiChatCompletionReq, AiJsonResponse } from '../types';
 
 function parseInputItems(inputItems: any[]): any[] {
@@ -98,8 +98,8 @@ export async function handleResponses(request: Request, env: Env): Promise<Respo
     const aiRes = await env.AI.run(model, options);
 
     if (options.stream && aiRes instanceof ReadableStream) {
-      console.log('[Responses] Returning streaming response');
-      return handleStreamingResponse(aiRes, requestedModel);
+      console.log('[Responses] Returning Responses API streaming response');
+      return handleResponsesApiStreaming(aiRes, requestedModel);
     }
 
     let parsedResponse: AiJsonResponse;
