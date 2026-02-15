@@ -1,12 +1,11 @@
 {
-  "version": "1.9.11",
+  "version": "2.1.0",
   "scripts": {
     "api-key": "bash -c 'API_KEY=sk-proj-$(openssl rand -base64 156 | tr -d \"+/\n=\" | tr \"+/\" \"-_\")-mlt && echo \"API_KEY=${API_KEY}\" | tee -a .env && wrangler secret put API_KEY <<< \"$API_KEY\"'",
     "dev": "wrangler dev --port 3000 --ip 0.0.0.0 --remote src/index.ts",
     "deploy": "wrangler deploy --minify src/index.ts"
   },
   "dependencies": {
-    "@cloudflare/ai": "^1.0.14",
     "hono": "^3.8.0-rc.2"
   },
   "devDependencies": {
