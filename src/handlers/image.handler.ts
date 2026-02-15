@@ -3,88 +3,186 @@
  * IMAGE GENERATION HANDLER
  * ============================================================================
  *
- * Handles /v1/images/generations endpoint
+ * Handles the POST /v1/images/generations endpoint for generating images.
+ * Converts OpenAI DALL-E requests to Cloudflare Workers AI (Flux) format
+ * and returns images in OpenAI-compatible format.
+ *
+ * Supported models:
+ * - dall-e-2, dall-e-3 → Flux 2 Klein 9B
+ * - gpt-image-1 → Flux 2 Klein 9B
+ * - @cf/black-forest-labs/flux-* (direct Cloudflare models)
+ *
+ * @module handlers/image
  */
 
-import { errorResponse } from '../errors';
+import { errorResponse, validationError, serverError } from '../errors';
 import { getCfModelName } from '../model-helpers';
+import type { Env, OpenAiImageGenerationReq, OpenAiImageObject, OpenAiImageGenerationRes } from '../types';
 
+/**
+ * ============================================================================
+ * HELPER FUNCTIONS
+ * ============================================================================
+ */
+
+/**
+ * Check if a model is an image generation model.
+ */
+function isImageGenerationModel(model: string, requestedModel: string): boolean {
+  return model.includes('flux') ||
+         model.includes('dall-e') ||
+         model.includes('stable-diffusion') ||
+         model.includes('gpt-image') ||
+         requestedModel.includes('dall-e') ||
+         requestedModel.includes('gpt-image');
+}
+
+/**
+ * Parse size string (e.g., "1024x1024") to width/height object.
+ */
+function parseImageSize(size: string): { width: number; height: number } | null {
+  const parts = size.split('x').map(s => parseInt(s.trim()));
+  if (parts.length === 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
+    return { width: parts[0], height: parts[1] };
+  }
+  return null;
+}
+
+/**
+ * Convert binary data to base64 string.
+ */
+function binaryToBase64(data: Uint8Array | ArrayBuffer): string {
+  const bytes = data instanceof Uint8Array ? Array.from(data) : Array.from(new Uint8Array(data));
+  return btoa(String.fromCharCode(...bytes));
+}
+
+/**
+ * Read all chunks from a ReadableStream and convert to base64.
+ */
+async function streamToBase64(stream: ReadableStream): Promise<string> {
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+
+  let result;
+  while (!(result = await reader.read()).done) {
+    chunks.push(result.value);
+  }
+
+  // Combine all chunks
+  const totalLength = chunks.reduce((acc, chunk) => acc + chunk.length, 0);
+  const fullData = new Uint8Array(totalLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    fullData.set(chunk, offset);
+    offset += chunk.length;
+  }
+
+  return binaryToBase64(fullData);
+}
+
+/**
+ * ============================================================================
+ * HANDLER
+ * ============================================================================
+ */
+
+/**
+ * Handle POST /v1/images/generations request.
+ *
+ * Generates images using Cloudflare Workers AI (Flux models).
+ * Supports OpenAI DALL-E API format for compatibility.
+ *
+ * @param request - HTTP request with image generation request body
+ * @param env - Cloudflare Workers environment with AI binding
+ * @returns OpenAI-compatible JSON response with image data
+ *
+ * @example
+ * // Request:
+ * {
+ *   "model": "dall-e-3",
+ *   "prompt": "A sunset over mountains",
+ *   "n": 1,
+ *   "size": "1024x1024",
+ *   "response_format": "url"
+ * }
+ *
+ * // Response:
+ * {
+ *   "created": 1708012800,
+ *   "data": [
+ *     { "url": "data:image/png;base64,..." }
+ *   ],
+ *   "model": "dall-e-3"
+ * }
+ *
+ * @see {@link https://platform.openai.com/docs/api-reference/images/create | OpenAI Images API}
+ */
 export async function handleImageGeneration(request: Request, env: Env): Promise<Response> {
+  const startTime = Date.now();
+  console.log('[Image] Processing image generation request...');
+
   try {
+    // Parse request body
     const data = await request.json() as OpenAiImageGenerationReq;
     const { model: requestedModel, prompt, n = 1, response_format = 'url', size } = data;
+
+    // Validate required fields
+    if (!prompt) {
+      return validationError('Prompt is required', 'prompt');
+    }
+
+    if (!requestedModel) {
+      return validationError('Model is required', 'model');
+    }
+
+    // Resolve model name (e.g., dall-e-3 -> @cf/black-forest-labs/flux-2-klein-9b)
     const model = getCfModelName(requestedModel, env);
+    console.log(`[Image] Using model: ${model} (requested: ${requestedModel})`);
 
-    console.log(`[Image] Request to generate image with model: ${model}, prompt length: ${prompt?.length || 0}`);
-
-    // Validation
-    if (!model || !prompt) {
-      return errorResponse("Model and prompt are required", 400);
+    // Validate it's an image generation model
+    if (!isImageGenerationModel(model, requestedModel)) {
+      return validationError(
+        `Model "${requestedModel}" is not a valid image generation model. Use dall-e-2, dall-e-3, or gpt-image-1.`,
+        'model'
+      );
     }
 
-    // Check if valid image generation model
-    // Accept models that contain 'flux', 'dall-e', 'stable-diffusion', or 'gpt-image'
-    const isImageModel = model.includes('flux') ||
-                        model.includes('dall-e') ||
-                        model.includes('stable-diffusion') ||
-                        model.includes('gpt-image') ||
-                        requestedModel.includes('dall-e') ||
-                        requestedModel.includes('gpt-image');
-
-    if (!isImageModel) {
-      console.log(`[Image] Model ${model} is not recognized as an image generation model`);
-      return errorResponse("Invalid image generation model - must be a Flux, DALL-E, or image generation model", 400);
-    }
-
-    console.log(`[Image] Model ${model} recognized as image generation model - proceeding`);
-
-    // Cloudflare image generation models require specific format
+    // Prepare image generation options
     const imageInput: any = { prompt };
 
-    // Parse size and add width/height if provided
+    // Add size if provided
     if (size) {
-      const [width, height] = size.split('x').map(s => parseInt(s.trim()));
-      if (width && height) {
-        imageInput.width = width;
-        imageInput.height = height;
-        console.log(`[Image] Setting size: ${width}x${height}`);
+      const dimensions = parseImageSize(size);
+      if (dimensions) {
+        imageInput.width = dimensions.width;
+        imageInput.height = dimensions.height;
+        console.log(`[Image] Size: ${dimensions.width}x${dimensions.height}`);
       }
     }
 
+    console.log(`[Image] Generating image with prompt (${prompt.length} chars)`);
+
+    // Call Cloudflare Workers AI
     let aiRes;
     try {
-      console.log(`[Image] Calling Cloudflare AI.run with model ${model}`);
-      console.log(`[Image] Input object:`, JSON.stringify(imageInput).substring(0, 200));
-
       aiRes = await env.AI.run(model as any, imageInput);
-      console.log(`[Image] AI.run completed, response type: ${typeof aiRes}`);
+      console.log(`[Image] Generation complete, response type: ${typeof aiRes}`);
     } catch (error: any) {
-      const errorMsg = (error as Error).message;
-      const errorType = error?.constructor?.name || typeof error;
+      const errorMsg = error?.message || String(error);
+      console.error(`[Image] AI generation failed:`, errorMsg);
 
-      console.error(`[Image] Failed to call Cloudflare AI with model ${model}`);
-      console.error(`[Image] Error type: ${errorType}`);
-      console.error(`[Image] Error message: ${errorMsg}`);
-
-      // Check if it's an authentication error
-      if (errorMsg.includes('AuthenticationError') || errorMsg.includes('authentication') ||
-          errorMsg.includes('unauthorized') || errorMsg.includes('401') || errorMsg.includes('403')) {
-        console.error(`[Image] Authentication error - check Cloudflare Workers AI credentials`);
-        return errorResponse(
-          "Authentication failed for image generation - check Cloudflare account permissions",
-          401,
-          "authentication_error",
-          "Cloudflare Workers AI authentication failed"
+      // Handle specific error types
+      if (errorMsg.includes('authentication') || errorMsg.includes('unauthorized') ||
+          errorMsg.includes('401') || errorMsg.includes('403')) {
+        return serverError(
+          'Authentication failed for image generation',
+          'Check Cloudflare Workers AI credentials'
         );
       }
 
-      // Check if model is not found
-      if (errorMsg.includes('not found') || errorMsg.includes('404') || errorMsg.includes('does not exist')) {
-        console.error(`[Image] Model not found in Cloudflare Workers AI`);
-        return errorResponse(
-          "Image generation model not available",
-          404,
-          "model_not_found",
+      if (errorMsg.includes('not found') || errorMsg.includes('404')) {
+        return serverError(
+          'Image generation model not available',
           `Model ${model} not found in Cloudflare Workers AI`
         );
       }
@@ -92,83 +190,57 @@ export async function handleImageGeneration(request: Request, env: Env): Promise
       throw error;
     }
 
-    console.log(`[Image] Response type: ${typeof aiRes}, is ReadableStream: ${aiRes instanceof ReadableStream}`);
-
-    // Debug: Log the full response structure
-    if (typeof aiRes === 'object' && aiRes !== null && !(aiRes instanceof ReadableStream)) {
-      console.log(`[Image] Full aiRes object:`, JSON.stringify(aiRes, null, 2).substring(0, 500));
-    }
-
-    // Process image response
+    // Extract image data from response
     let imageData: string = '';
 
     if (aiRes instanceof ReadableStream) {
-      // Handle streaming response
-      console.log(`[Image] Response is a ReadableStream, reading chunks...`);
-      const reader = aiRes.getReader();
-      const chunks: Uint8Array[] = [];
-      let result;
-      while (!(result = await reader.read()).done) {
-        chunks.push(result.value);
-      }
-      const fullData = new Uint8Array(chunks.reduce((acc, chunk) => acc + chunk.length, 0));
-      let offset = 0;
-      for (const chunk of chunks) {
-        fullData.set(chunk, offset);
-        offset += chunk.length;
-      }
-      const bytes = Array.from(fullData);
-      imageData = btoa(String.fromCharCode(...bytes));
-      console.log(`[Image] Converted stream to base64, length: ${imageData.length}`);
-    } else if (aiRes instanceof Uint8Array || aiRes instanceof ArrayBuffer) {
-      const bytes = aiRes instanceof Uint8Array ? Array.from(aiRes) : Array.from(new Uint8Array(aiRes));
-      imageData = btoa(String.fromCharCode(...bytes));
-      console.log(`[Image] Converted binary data to base64, length: ${imageData.length}`);
-    } else if (typeof aiRes === 'string') {
+      console.log('[Image] Processing streaming response...');
+      imageData = await streamToBase64(aiRes);
+      console.log(`[Image] Converted stream to base64 (${imageData.length} chars)`);
+    }
+    else if (aiRes instanceof Uint8Array || aiRes instanceof ArrayBuffer) {
+      imageData = binaryToBase64(aiRes);
+      console.log(`[Image] Converted binary to base64 (${imageData.length} chars)`);
+    }
+    else if (typeof aiRes === 'string') {
       imageData = aiRes;
-      console.log(`[Image] Response is string, length: ${imageData.length}`);
-    } else if (typeof aiRes === 'object' && aiRes !== null) {
-      console.log(`[Image] Response is object with keys: ${Object.keys(aiRes).join(', ')}`);
-
+      console.log(`[Image] String response (${imageData.length} chars)`);
+    }
+    else if (typeof aiRes === 'object' && aiRes !== null) {
+      // Check various possible response formats
       if ('image' in aiRes) {
         const imgData = (aiRes as any).image;
         if (imgData instanceof Uint8Array || imgData instanceof ArrayBuffer) {
-          const bytes = imgData instanceof Uint8Array ? Array.from(imgData) : Array.from(new Uint8Array(imgData));
-          imageData = btoa(String.fromCharCode(...bytes));
-          console.log(`[Image] Extracted binary image from 'image' field, converted to base64`);
+          imageData = binaryToBase64(imgData);
         } else if (typeof imgData === 'string') {
           imageData = imgData;
-          console.log(`[Image] Extracted string image from 'image' field`);
         }
       } else if ('data' in aiRes && typeof (aiRes as any).data === 'string') {
         imageData = (aiRes as any).data;
-        console.log(`[Image] Extracted from 'data' field`);
       } else if ('result' in aiRes && typeof (aiRes as any).result === 'string') {
         imageData = (aiRes as any).result;
-        console.log(`[Image] Extracted from 'result' field`);
       } else {
-        console.error(`[Image] Unexpected response format:`, JSON.stringify(aiRes).substring(0, 300));
-        return errorResponse(
-          "Image generation returned unexpected format - no image data found",
-          500,
-          "unexpected_response",
-          `Response contained: ${Object.keys(aiRes).join(', ')}`
+        console.error(`[Image] Unexpected response format:`, Object.keys(aiRes));
+        return serverError(
+          'Image generation returned unexpected format',
+          `Response keys: ${Object.keys(aiRes).join(', ')}`
         );
       }
     }
 
-    console.log(`[Image] Final image data length: ${imageData.length} chars`);
-
-    // Ensure we have image data
+    // Validate we have image data
     if (!imageData || imageData.length === 0) {
-      console.error(`[Image] No image data generated`);
-      return errorResponse("Failed to generate image - no data returned", 500);
+      console.error('[Image] No image data generated');
+      return serverError('Failed to generate image', 'No image data returned from AI');
     }
 
-    // Format response based on request
+    console.log(`[Image] Final image data: ${imageData.length} chars`);
+
+    // Format response based on requested format
     const imageObject: OpenAiImageObject = {};
 
     if (response_format === 'b64_json') {
+      // Return base64-encoded JSON
       if (imageData.startsWith('data:image')) {
         imageObject.b64_json = imageData.split(',')[1];
       } else if (imageData.startsWith('/9j/') || imageData.startsWith('iVBORw0KGgo')) {
@@ -177,29 +249,39 @@ export async function handleImageGeneration(request: Request, env: Env): Promise
         imageObject.b64_json = btoa(imageData);
       }
     } else {
+      // Return as data URL
       if (imageData.startsWith('data:image')) {
         imageObject.url = imageData;
       } else if (imageData.startsWith('/9j/') || imageData.startsWith('iVBORw0KGgo')) {
-        imageObject.url = 'data:image/png;base64,' + imageData;
+        imageObject.url = `data:image/png;base64,${imageData}`;
       } else {
         imageObject.url = imageData;
       }
     }
 
-    const responseData = {
+    // Build OpenAI-compatible response
+    const responseData: OpenAiImageGenerationRes = {
       created: Math.floor(Date.now() / 1000),
       data: Array(n).fill(null).map(() => ({ ...imageObject })),
       model: requestedModel
     };
 
-    return new Response(JSON.stringify(responseData as OpenAiImageGenerationRes), {
+    const duration = Date.now() - startTime;
+    console.log(`[Image] Generated ${n} image(s) in ${duration}ms`);
+
+    return new Response(JSON.stringify(responseData), {
       status: 200,
       headers: { 'Content-Type': 'application/json' }
     });
 
   } catch (error) {
-    console.error(`[Image] Error:`, error);
-    return errorResponse("Image generation failed", 500, (error as Error).message);
+    const duration = Date.now() - startTime;
+    console.error(`[Image] Failed after ${duration}ms:`, error);
+
+    return serverError(
+      'Image generation failed',
+      error instanceof Error ? error.message : 'Unknown error'
+    );
   }
 }
 

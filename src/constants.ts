@@ -3,14 +3,47 @@
  * CONSTANTS AND CONFIGURATION
  * ============================================================================
  *
- * Model aliases, limits, and feature flags for the OpenAI to Cloudflare proxy
+ * Central configuration for the OpenAI to Cloudflare Workers AI proxy service.
+ * This file defines model aliases, capabilities, limits, and feature flags.
+ *
+ * @module constants
  */
 
-// Version for deployment tracking
+/**
+ * ============================================================================
+ * VERSION INFORMATION
+ * ============================================================================
+ */
+
+/**
+ * Proxy service version for deployment tracking and logging.
+ *
+ * Update this when making significant changes to the proxy behavior.
+ * Format: MAJOR.MINOR.PATCH
+ *
+ * @constant
+ * @example
+ * console.log(`Starting proxy v${PROXY_VERSION}`);
+ */
 export const PROXY_VERSION = "1.9.30"; // Updated: 2026-02-14 - FIX: Use multipart/form-data for Cloudflare image generation API
 
-// Models that support reasoning_content field (thinking/reasoning process)
-// Standard models (gpt-4, gpt-4o, gpt-3.5-turbo) should NOT include reasoning_content
+/**
+ * ============================================================================
+ * MODEL CAPABILITIES
+ * ============================================================================
+ */
+
+/**
+ * Models that support reasoning_content field (thinking/reasoning process).
+ *
+ * These models can include a separate reasoning_content field in their responses
+ * to show their thought process before generating the final answer.
+ *
+ * NOTE: Standard models (gpt-4, gpt-4o, gpt-3.5-turbo) should NOT include reasoning_content
+ *
+ * @constant
+ * @see {@link https://platform.openai.com/docs/guides/reasoning | OpenAI Reasoning Models}
+ */
 export const REASONING_MODELS = [
   'o1-preview',
   'o1-mini',
@@ -22,10 +55,19 @@ export const REASONING_MODELS = [
   'qwen'    // Qwen models support reasoning_content
 ];
 
-// Models that support tool calling in Cloudflare Workers AI
-// NOTE: Llama models output tool calls as plain text JSON, not structured tool_calls
-// NOTE: GPT-OSS does NOT support tools on Cloudflare Workers AI (platform limitation)
-// NOTE: Mistral Small 3.1 claims to support tools but actually ignores them and generates text
+/**
+ * Models that support function/tool calling in Cloudflare Workers AI.
+ *
+ * These models can handle structured function calls and return tool_calls objects.
+ *
+ * IMPORTANT NOTES:
+ * - Llama models output tool calls as plain text JSON, not structured tool_calls
+ * - GPT-OSS does NOT support tools on Cloudflare Workers AI (platform limitation)
+ * - Mistral Small 3.1 claims support but actually ignores tools and generates text
+ *
+ * @constant
+ * @see {@link https://developers.cloudflare.com/workers-ai/function-calling/ | Cloudflare Function Calling}
+ */
 export const TOOL_CAPABLE_MODELS = [
   // Llama models removed - they output JSON text instead of proper tool_calls structure
   // '@cf/meta/llama-3.3-70b-instruct-fp8-fast',
@@ -40,13 +82,42 @@ export const TOOL_CAPABLE_MODELS = [
   '@cf/zai-org/glm-4.7-flash',  // ✅ GLM-4 supports function calling
 ];
 
-// GPT-OSS models use a different input format (instructions + input instead of messages)
+/**
+ * GPT-OSS models that use a different input format.
+ *
+ * These models require instructions + input format instead of the standard messages array.
+ * They are part of OpenAI's GPT-OSS initiative on Cloudflare.
+ *
+ * @constant
+ */
 export const GPT_OSS_MODELS = [
   '@cf/openai/gpt-oss-20b',
   '@cf/openai/gpt-oss-120b',
 ];
 
-// Model aliases for Onyx compatibility (maps OpenAI model names to CF models)
+/**
+ * ============================================================================
+ * MODEL ROUTING
+ * ============================================================================
+ */
+
+/**
+ * Model aliases for OpenAI API compatibility.
+ *
+ * Maps OpenAI model names (e.g., "gpt-4") to Cloudflare Workers AI model identifiers.
+ * This allows clients using OpenAI SDKs to work seamlessly with Cloudflare models.
+ *
+ * Strategy:
+ * - GPT-4 variants → Qwen (best tool calling support)
+ * - GPT-3.5 variants → Llama 3 8B (fast, efficient)
+ * - GPT-5 → GLM-4.7-Flash (reasoning + tools)
+ * - Image models → Flux (Cloudflare's image generation)
+ * - Embeddings → BGE models (optimized for embeddings)
+ *
+ * @constant
+ * @example
+ * const cfModel = MODEL_ALIASES['gpt-4']; // Returns: '@cf/qwen/qwen3-30b-a3b-fp8'
+ */
 export const MODEL_ALIASES: Record<string, string> = {
   // Use Qwen for GPT-4 aliases since it properly supports function calling
   'gpt-4': '@cf/qwen/qwen3-30b-a3b-fp8',
@@ -68,8 +139,24 @@ export const MODEL_ALIASES: Record<string, string> = {
   'text-embedding-3-large': '@cf/baai/bge-large-en-v1.5',
 };
 
-// Model-specific max_tokens limits
-// Cloudflare models have different maximum token limits
+/**
+ * ============================================================================
+ * MODEL LIMITS
+ * ============================================================================
+ */
+
+/**
+ * Model-specific max_tokens limits.
+ *
+ * Defines the maximum number of tokens each model can generate in a single request.
+ * Exceeding these limits will cause API errors from Cloudflare Workers AI.
+ *
+ * @constant
+ * @example
+ * const limit = MODEL_MAX_TOKENS['@cf/qwen/qwen3-30b-a3b-fp8']; // Returns: 4096
+ *
+ * @see {@link https://developers.cloudflare.com/workers-ai/models/ | Cloudflare AI Models}
+ */
 export const MODEL_MAX_TOKENS: Record<string, number> = {
   // Hermes 2 Pro has a strict 1024 token limit
   '@hf/nousresearch/hermes-2-pro-mistral-7b': 1024,

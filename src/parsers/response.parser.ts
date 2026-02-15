@@ -3,125 +3,199 @@
  * RESPONSE PARSERS
  * ============================================================================
  *
- * Parses and extracts responses from different AI provider formats:
- * - GPT-OSS format (output array with message/reasoning types)
- * - OpenAI-compatible format (choices array with message object)
- * - Sanitizes raw responses to ensure valid content
+ * Parses and transforms responses from different Cloudflare AI response formats
+ * into a normalized AiJsonResponse structure for consumption by response builders.
+ *
+ * Cloudflare Workers AI supports three response formats:
+ * 1. **GPT-OSS format**: {output: [{type: "reasoning"|"message", content: [...]}]}
+ * 2. **OpenAI-compatible format**: {choices: [{message: {content, reasoning_content, tool_calls}}]}
+ * 3. **Legacy format**: Direct response text
+ *
+ * These parsers handle format detection, content extraction, tool call transformation,
+ * reasoning content separation, and token usage estimation.
+ *
+ * @module parsers/response
  */
 
 import { REASONING_MODELS } from '../constants';
+import type { AiJsonResponse, UsageStats } from '../types';
 
 /**
- * Extract response from GPT-OSS format
- * GPT-OSS returns {output: [{type: "reasoning"|"message", content: [...]}]}
+ * ============================================================================
+ * HELPER FUNCTIONS
+ * ============================================================================
+ */
+
+/**
+ * Ensure response text is never null, undefined, or empty.
+ */
+function ensureValidResponseText(text: string | null | undefined, source: string): string {
+  if (!text || text.trim().length === 0) {
+    console.warn(`[${source}] No text content extracted, using fallback space character`);
+    return " ";
+  }
+  return text;
+}
+
+/**
+ * Estimate token usage from text length.
+ * Uses rough approximation: 1 token ≈ 4 characters.
+ */
+function estimateTokens(text: string): number {
+  return Math.max(1, Math.ceil(text.length / 4));
+}
+
+/**
+ * Create default usage stats.
+ */
+function createDefaultUsage(): UsageStats {
+  return {
+    prompt_tokens: 0,
+    completion_tokens: 0,
+    total_tokens: 0
+  };
+}
+
+/**
+ * ============================================================================
+ * GPT-OSS FORMAT PARSER
+ * ============================================================================
+ */
+
+/**
+ * Extract response from GPT-OSS format.
+ *
+ * GPT-OSS models (like @cf/openai/gpt-oss-20b, @cf/openai/gpt-oss-120b) return
+ * a different format with an output array containing message and reasoning items.
+ *
+ * Format: {output: [{type: "reasoning"|"message", content: [{text: "..."}]}]}
+ *
+ * This parser:
+ * 1. Extracts text from "message" type items (preferred)
+ * 2. Falls back to "reasoning" type if no message found
+ * 3. Estimates token usage if not provided
+ *
+ * @param res - Raw response from Cloudflare AI (GPT-OSS format)
+ * @returns Normalized AiJsonResponse with extracted content
+ *
+ * @example
+ * // GPT-OSS response:
+ * {
+ *   output: [
+ *     { type: "reasoning", content: [{text: "Let me think..."}] },
+ *     { type: "message", content: [{text: "The answer is 42"}] }
+ *   ]
+ * }
+ * // Returns: { response: "The answer is 42", ... }
  */
 export function extractGptOssResponse(res: any): AiJsonResponse {
   try {
-    console.log("[GPT-OSS] Full response:", JSON.stringify(res).substring(0, 1000));
+    console.log("[GPT-OSS] Parsing response, keys:", Object.keys(res).join(', '));
 
-    // GPT-OSS format has output array with different types
+    // Validate output array exists
     if (!res.output || !Array.isArray(res.output)) {
-      console.warn("[GPT-OSS] No output array found");
+      console.warn("[GPT-OSS] No output array found in response");
       return {
-        response: " ",
+        response: ensureValidResponseText(null, "GPT-OSS"),
         contentType: "application/json",
-        usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }
+        usage: createDefaultUsage()
       };
     }
 
-    console.log("[GPT-OSS] Output array length:", res.output.length);
-    res.output.forEach((item: any, idx: number) => {
-      console.log(`[GPT-OSS] Output[${idx}] type:`, item.type, "has content:", !!item.content);
-    });
+    console.log(`[GPT-OSS] Processing ${res.output.length} output items`);
 
-    // Look for message type content (skip reasoning)
+    // Extract text from message type items (preferred)
     let responseText = "";
 
     for (const item of res.output) {
       if (item.type === "message" && item.content && Array.isArray(item.content)) {
-        console.log("[GPT-OSS] Found message type, content array length:", item.content.length);
-        // Extract text from message content
         for (const contentItem of item.content) {
-          console.log("[GPT-OSS] Message content item:", JSON.stringify(contentItem).substring(0, 200));
-          // Content items may have text directly without a type field
           if (contentItem.text) {
             responseText += contentItem.text;
-            console.log("[GPT-OSS] Extracted message text, current length:", responseText.length);
           }
         }
       }
     }
 
-    console.log("[GPT-OSS] After message extraction, responseText length:", responseText.length);
+    console.log(`[GPT-OSS] Extracted ${responseText.length} chars from message items`);
 
-    // If no message found, check reasoning as fallback
+    // Fallback: extract from reasoning type if no message found
     if (!responseText) {
-      console.log("[GPT-OSS] No message type found, using reasoning content");
+      console.log("[GPT-OSS] No message content, falling back to reasoning");
       for (const item of res.output) {
         if (item.type === "reasoning" && item.content && Array.isArray(item.content)) {
-          console.log("[GPT-OSS] Found reasoning content array, length:", item.content.length);
           for (const contentItem of item.content) {
-            console.log("[GPT-OSS] Content item:", JSON.stringify(contentItem).substring(0, 200));
             if (contentItem.text) {
               responseText += contentItem.text;
             }
           }
-          if (responseText) {
-            console.log("[GPT-OSS] Extracted reasoning text, length:", responseText.length);
-            break;
-          }
+          if (responseText) break; // Use first reasoning item with content
         }
       }
     }
 
-    // Estimate token usage
-    let usage = res.usage || {
-      prompt_tokens: 0,
-      completion_tokens: 0,
+    // Estimate token usage if not provided
+    const usage = res.usage || {
+      prompt_tokens: estimateTokens((res.instructions || "") + (res.input || "")),
+      completion_tokens: estimateTokens(responseText),
       total_tokens: 0
     };
+    usage.total_tokens = usage.prompt_tokens + usage.completion_tokens;
 
-    if (!usage.prompt_tokens && !usage.completion_tokens) {
-      usage.prompt_tokens = Math.ceil(((res.instructions || "") + (res.input || "")).length / 4);
-      usage.completion_tokens = Math.ceil(responseText.length / 4);
-      usage.total_tokens = usage.prompt_tokens + usage.completion_tokens;
-      console.log("[GPT-OSS] Estimated token usage - prompt:", usage.prompt_tokens, "completion:", usage.completion_tokens);
-    }
-
-    // Ensure response is never empty
-    if (!responseText || responseText.trim().length === 0) {
-      console.warn("[GPT-OSS] No text content extracted, using fallback");
-      responseText = " ";
-    }
+    console.log(`[GPT-OSS] Parsed response: ${responseText.length} chars, usage:`, usage);
 
     return {
-      response: responseText || " ",
+      response: ensureValidResponseText(responseText, "GPT-OSS"),
       contentType: "application/json",
       usage: usage
     };
   } catch (error) {
-    console.error("[GPT-OSS] Error extracting response:", error);
+    console.error("[GPT-OSS] Parse error:", error);
     return {
-      response: " ",
+      response: ensureValidResponseText(null, "GPT-OSS"),
       contentType: "application/json",
-      usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }
+      usage: createDefaultUsage()
     };
   }
 }
 
 /**
- * Sanitize AI response to ensure it has valid content
- * Handles cases where Cloudflare returns invalid characters or numbers instead of strings
+ * ============================================================================
+ * RESPONSE SANITIZATION
+ * ============================================================================
+ */
+
+/**
+ * Sanitize AI response to ensure valid content and structure.
+ *
+ * Handles edge cases where Cloudflare returns:
+ * - null or undefined response
+ * - Non-string response (numbers, objects)
+ * - Empty strings
+ * - Invalid tool_calls structure
+ *
+ * @param res - Raw AI response to sanitize
+ * @returns Sanitized AiJsonResponse with guaranteed valid content
+ *
+ * @example
+ * // Handles null response:
+ * sanitizeAiResponse({ response: null })
+ * // Returns: { response: " ", ... }
+ *
+ * @example
+ * // Handles numeric response:
+ * sanitizeAiResponse({ response: 42 })
+ * // Returns: { response: "42", ... }
  */
 export function sanitizeAiResponse(res: any): AiJsonResponse {
-  console.log("[Sanitize] Ensuring response has valid content");
+  console.log("[Sanitize] Validating response structure");
 
   // Ensure response field exists and is valid
   let response = res.response;
 
   // Handle null/undefined
   if (response === null || response === undefined) {
-    console.warn("[Sanitize] Response is null/undefined, using space");
+    console.warn("[Sanitize] Response is null/undefined, using fallback");
     response = " ";
   }
   // Convert non-strings to strings
@@ -132,43 +206,80 @@ export function sanitizeAiResponse(res: any): AiJsonResponse {
 
   // Handle empty strings
   if (!response || response.trim().length === 0) {
-    console.warn("[Sanitize] Response is empty, using space");
+    console.warn("[Sanitize] Response is empty, using fallback");
     response = " ";
   }
 
-  // Ensure tool_calls are valid if present
+  // Validate tool_calls structure
   let toolCalls = res.tool_calls;
-  if (toolCalls && !Array.isArray(toolCalls)) {
-    console.warn("[Sanitize] tool_calls is not an array, clearing");
-    toolCalls = undefined;
-  } else if (toolCalls && toolCalls.length === 0) {
-    console.log("[Sanitize] tool_calls array is empty, clearing");
-    toolCalls = undefined;
+  if (toolCalls !== undefined) {
+    if (!Array.isArray(toolCalls)) {
+      console.warn("[Sanitize] tool_calls is not an array, removing");
+      toolCalls = undefined;
+    } else if (toolCalls.length === 0) {
+      console.log("[Sanitize] tool_calls array is empty, removing");
+      toolCalls = undefined;
+    }
   }
 
   return {
     response,
     contentType: res.contentType || "application/json",
-    usage: res.usage || { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
-    ...(toolCalls && { tool_calls: toolCalls })
+    usage: res.usage || createDefaultUsage(),
+    ...(toolCalls && { tool_calls: toolCalls }),
+    ...(res.reasoning_content && { reasoning_content: res.reasoning_content })
   };
 }
 
 /**
- * Extract response from OpenAI-compatible format that Cloudflare now returns
- * This handles responses with choices array, and supports reasoning_content field
+ * ============================================================================
+ * OPENAI-COMPATIBLE FORMAT PARSER
+ * ============================================================================
+ */
+
+/**
+ * Extract response from OpenAI-compatible format.
+ *
+ * Modern Cloudflare AI models return an OpenAI-compatible format with choices array.
+ * This is the most common format for models like Qwen, Llama, Mistral, etc.
+ *
+ * Format: {choices: [{message: {content, reasoning_content, tool_calls}}], usage: {...}}
+ *
+ * This parser:
+ * 1. Extracts message content and reasoning_content separately
+ * 2. Handles tool calls transformation to Cloudflare format
+ * 3. Validates and estimates token usage
+ * 4. Adjusts token counts for reasoning models
+ *
+ * @param res - Raw response from Cloudflare AI (OpenAI-compatible format)
+ * @param model - Model identifier for reasoning model detection
+ * @returns Normalized AiJsonResponse with extracted content
+ *
+ * @example
+ * // OpenAI-compatible response:
+ * {
+ *   choices: [{
+ *     message: {
+ *       role: "assistant",
+ *       content: "The answer is 42",
+ *       reasoning_content: "Let me think..."
+ *     }
+ *   }],
+ *   usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 }
+ * }
+ * // Returns: { response: "The answer is 42", reasoning_content: "Let me think...", ... }
  */
 export function extractOpenAiCompatibleResponse(res: any, model: string): AiJsonResponse {
   try {
-    console.log("[OpenAI-Compat] Full response:", JSON.stringify(res).substring(0, 1000));
+    console.log("[OpenAI-Compat] Parsing response, has choices:", !!res.choices);
 
     // Validate response structure
     if (!res.choices || !Array.isArray(res.choices) || res.choices.length === 0) {
-      console.warn("[OpenAI-Compat] No choices array found or empty");
+      console.warn("[OpenAI-Compat] Invalid or empty choices array");
       return {
-        response: " ",
+        response: ensureValidResponseText(null, "OpenAI-Compat"),
         contentType: "application/json",
-        usage: res.usage || { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }
+        usage: res.usage || createDefaultUsage()
       };
     }
 
@@ -178,31 +289,30 @@ export function extractOpenAiCompatibleResponse(res: any, model: string): AiJson
     if (!message) {
       console.warn("[OpenAI-Compat] No message in first choice");
       return {
-        response: " ",
+        response: ensureValidResponseText(null, "OpenAI-Compat"),
         contentType: "application/json",
-        usage: res.usage || { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }
+        usage: res.usage || createDefaultUsage()
       };
     }
 
-    // Extract content - check reasoning_content first, then content
-    let responseText = "";
+    // Extract reasoning content (thinking process)
     let reasoningContent = "";
-
-    // Extract reasoning_content separately (the "thinking" part)
     if (message.reasoning_content && typeof message.reasoning_content === 'string') {
-      console.log("[OpenAI-Compat] Found reasoning_content, length:", message.reasoning_content.length);
       reasoningContent = message.reasoning_content;
+      console.log(`[OpenAI-Compat] Found reasoning_content: ${reasoningContent.length} chars`);
     }
 
-    // Extract regular content (the final answer)
+    // Extract main content (final answer)
+    let responseText = "";
     if (message.content && typeof message.content === 'string') {
-      console.log("[OpenAI-Compat] Found content, length:", message.content.length);
       responseText = message.content;
+      console.log(`[OpenAI-Compat] Found content: ${responseText.length} chars`);
     }
-    // If no content but we have tool_calls, handle that
+    // Handle tool calls (no regular content when tools are called)
     else if (message.tool_calls && Array.isArray(message.tool_calls) && message.tool_calls.length > 0) {
-      console.log("[OpenAI-Compat] No content but found tool_calls:", message.tool_calls.length);
-      // Transform tool calls to CF format
+      console.log(`[OpenAI-Compat] Found ${message.tool_calls.length} tool call(s), no content`);
+
+      // Transform to Cloudflare format
       const toolCalls = message.tool_calls.map((tc: any) => ({
         name: tc.function?.name || tc.name,
         arguments: typeof tc.function?.arguments === 'string'
@@ -213,61 +323,54 @@ export function extractOpenAiCompatibleResponse(res: any, model: string): AiJson
       return {
         response: "", // Empty for tool calls
         contentType: "application/json",
-        usage: res.usage || { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+        usage: res.usage || createDefaultUsage(),
         tool_calls: toolCalls,
         ...(reasoningContent && { reasoning_content: reasoningContent })
       };
     }
 
-    console.log("[OpenAI-Compat] Final response text length:", responseText.length, "reasoning length:", reasoningContent.length);
+    // Validate and estimate usage
+    let usage = res.usage || createDefaultUsage();
 
-    // Ensure usage data is always provided with realistic estimates
-    let usage = res.usage || {
-      prompt_tokens: 0,
-      completion_tokens: 0,
-      total_tokens: 0
-    };
+    // Check if model supports reasoning
+    const isReasoningModel = REASONING_MODELS.some(rm =>
+      model.toLowerCase().includes(rm.toLowerCase())
+    );
 
-    // Check if model is a reasoning model
-    const isReasoningModel = REASONING_MODELS.some(rm => model.toLowerCase().includes(rm.toLowerCase()));
-
-    // If Cloudflare returns all zeros OR missing values, estimate from actual content
-    if ((usage.prompt_tokens === 0 || !usage.prompt_tokens) && (usage.completion_tokens === 0 || !usage.completion_tokens)) {
-      const contentForUsage = isReasoningModel
+    // Estimate usage if missing or all zeros
+    if (usage.prompt_tokens === 0 && usage.completion_tokens === 0) {
+      const contentLength = isReasoningModel
         ? responseText.length + reasoningContent.length
         : responseText.length;
 
-      usage.prompt_tokens = 10;  // Minimum for test request
-      usage.completion_tokens = Math.max(1, Math.ceil(contentForUsage / 4));
+      usage.prompt_tokens = 10; // Minimum estimate
+      usage.completion_tokens = estimateTokens(responseText + reasoningContent);
       usage.total_tokens = usage.prompt_tokens + usage.completion_tokens;
-      console.log(`[OpenAI-Compat] Estimated usage for ${isReasoningModel ? 'reasoning' : 'non-reasoning'} model - prompt:`, usage.prompt_tokens, "completion:", usage.completion_tokens, "from text length:", contentForUsage);
-    }
-    // If non-reasoning model has reasoning content, recalculate
-    else if (!isReasoningModel && reasoningContent.length > 0) {
-      const visibleTokens = Math.max(1, Math.ceil(responseText.length / 4));
-      console.log(`[OpenAI-Compat] Adjusting token count for non-reasoning model - original completion_tokens: ${usage.completion_tokens}, adjusted to: ${visibleTokens} (reasoning stripped)`);
-      usage.completion_tokens = visibleTokens;
-      usage.total_tokens = usage.prompt_tokens + usage.completion_tokens;
-    }
 
-    // Ensure response is never empty
-    if (!responseText || responseText.trim().length === 0) {
-      console.warn("[OpenAI-Compat] No text content extracted, using fallback");
-      responseText = " ";
+      console.log(
+        `[OpenAI-Compat] Estimated usage for ${isReasoningModel ? 'reasoning' : 'standard'} model:`,
+        usage
+      );
+    }
+    // Adjust usage for non-reasoning models with reasoning content
+    else if (!isReasoningModel && reasoningContent) {
+      usage.completion_tokens = estimateTokens(responseText);
+      usage.total_tokens = usage.prompt_tokens + usage.completion_tokens;
+      console.log(`[OpenAI-Compat] Adjusted usage for non-reasoning model (stripped reasoning)`);
     }
 
     return {
-      response: responseText,
+      response: ensureValidResponseText(responseText, "OpenAI-Compat"),
       contentType: "application/json",
       usage: usage,
       ...(reasoningContent && { reasoning_content: reasoningContent })
     };
   } catch (error) {
-    console.error("[OpenAI-Compat] Error extracting response:", error);
+    console.error("[OpenAI-Compat] Parse error:", error);
     return {
-      response: " ",
+      response: ensureValidResponseText(null, "OpenAI-Compat"),
       contentType: "application/json",
-      usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }
+      usage: createDefaultUsage()
     };
   }
 }

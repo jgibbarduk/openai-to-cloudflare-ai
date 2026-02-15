@@ -1,19 +1,54 @@
+/**
+ * ============================================================================
+ * TYPE DEFINITIONS
+ * ============================================================================
+ *
+ * TypeScript interfaces and types for the OpenAI to Cloudflare Workers AI proxy.
+ * These types ensure type safety across the application and provide clear contracts
+ * for request/response handling, model configuration, and AI interactions.
+ *
+ * @module types
+ */
 
-interface Env {
+/**
+ * ============================================================================
+ * ENVIRONMENT & BINDINGS
+ * ============================================================================
+ */
+
+/**
+ * Cloudflare Workers environment bindings.
+ *
+ * Defines the runtime environment available to the worker, including
+ * AI binding, API keys, and KV storage.
+ */
+export interface Env {
+  /** Cloudflare Workers AI binding for model inference */
   AI: {
     run: (model: Model, options: AiPromptInputOptions | AiMessagesInputOptions | AiEmbeddingInputOptions) => Promise<AiNormalResponse | AiEmbeddingResponse | AiStreamResponse>;
   };
-  API_KEY?: string;  // Optional - if set, authentication is required
+  /** Optional API key for authentication (if not set, auth is disabled) */
+  API_KEY?: string;
+  /** Default AI model to use when none is specified */
   DEFAULT_AI_MODEL: string;
+  /** KV namespace for caching */
   CACHE: KVNamespace;
+  /** Cloudflare API key for direct API calls */
   CF_API_KEY: string | undefined;
+  /** Cloudflare account ID */
   CF_ACCOUNT_ID: string | undefined;
 }
 
 /**
- * AI Request
+ * ============================================================================
+ * AI REQUEST OPTIONS
+ * ============================================================================
  */
-interface AiBaseInputOptions {
+
+/**
+ * Base options for AI model inference requests.
+ */
+export interface AiBaseInputOptions {
   stream?: boolean;
   max_tokens?: number;
   temperature?: number | null | undefined;
@@ -25,13 +60,19 @@ interface AiBaseInputOptions {
   presence_penalty?: number;
 }
 
-interface AiPromptInputOptions extends AiBaseInputOptions {
+/**
+ * Options for prompt-based AI requests (legacy format).
+ */
+export interface AiPromptInputOptions extends AiBaseInputOptions {
   prompt: string;
   raw?: boolean;
   lora?: string;
 }
 
-interface AiMessagesInputOptions extends AiBaseInputOptions {
+/**
+ * Options for message-based AI requests (chat format).
+ */
+export interface AiMessagesInputOptions extends AiBaseInputOptions {
   messages: ChatMessage[];
   functions?: Array<{
     name: string;
@@ -40,112 +81,172 @@ interface AiMessagesInputOptions extends AiBaseInputOptions {
   tools?: Array<Tool | FunctionTool>;
 }
 
+export type ChatOptions = AiPromptInputOptions | AiMessagesInputOptions;
 
-type ChatOptions = AiPromptInputOptions | AiMessagesInputOptions;
-
-interface AiChatRequestParts {
-  model: Model, options: ChatOptions;
-}
-
-interface AiEmbeddingInputOptions {
-  text: string | string[];
-}
-
-interface AiEmbeddingPropsParts {
-  model: Model, options: AiEmbeddingInputOptions;
+export interface AiChatRequestParts {
+  model: Model;
+  options: ChatOptions;
 }
 
 /**
- * AI Response
+ * Options for embedding generation requests.
  */
-interface UsageStats {
+export interface AiEmbeddingInputOptions {
+  text: string | string[];
+}
+
+export interface AiEmbeddingPropsParts {
+  model: Model;
+  options: AiEmbeddingInputOptions;
+}
+
+/**
+ * ============================================================================
+ * AI RESPONSE TYPES
+ * ============================================================================
+ */
+
+/**
+ * Token usage statistics for AI responses.
+ */
+export interface UsageStats {
   prompt_tokens: number;
   completion_tokens: number;
   total_tokens: number;
 }
 
-interface ToolCall {
+/**
+ * Tool call structure returned by models that support function calling.
+ */
+export interface ToolCall {
   arguments: Record<string, any>;
   name: string;
 }
 
-interface AiJsonResponse {
+/**
+ * JSON response from Cloudflare AI inference.
+ */
+export interface AiJsonResponse {
   contentType: "application/json";
   response: string;
   usage: UsageStats;
   tool_calls?: ToolCall[];
-  reasoning_content?: string; // Thinking/reasoning output from models like Qwen
+  /** Thinking/reasoning output from models like Qwen, o1, etc. */
+  reasoning_content?: string;
 }
 
-type AiStreamResponse = ReadableStream<Uint8Array>;
-type AiNormalResponse = AiJsonResponse | AiStreamResponse;
-type AiEmbeddingResponse = { data: number[][]; shape: number[]; };
+export type AiStreamResponse = ReadableStream<Uint8Array>;
+export type AiNormalResponse = AiJsonResponse | AiStreamResponse;
+export type AiEmbeddingResponse = { data: number[][]; shape: number[]; };
 
 /**
- * Models
+ * ============================================================================
+ * MODEL TYPES
+ * ============================================================================
  */
-interface ModelType {
-  id: string,
-  name: string,
-  object: "model",
-  description: string,
-  taskName: CfModelTaskName,
+
+/**
+ * Model metadata structure.
+ */
+export interface ModelType {
+  id: string;
+  name: string;
+  object: "model";
+  description: string;
+  taskName: CfModelTaskName;
   taskDescription: string;
   inUse: boolean;
-};
-type Model = ModelType['id'];
+}
+
+export type Model = ModelType['id'];
 
 /**
- * OpenAI/WorkerAi Common
+ * ============================================================================
+ * OPENAI REQUEST/RESPONSE FORMATS
+ * ============================================================================
  */
-type ResponseFormat =
+
+/**
+ * Response format options for chat completions.
+ */
+export type ResponseFormat =
   | "auto"
   | { type: "text"; }
   | { type: "json_object"; }
   | { type: "json_schema"; json_schema: Record<string, any>; };
 
-type ToolChoice =
+/**
+ * Tool choice options for function calling.
+ */
+export type ToolChoice =
   | 'none'
   | 'auto'
   | 'required'
   | { type: 'function'; function: { name: string; }; };
 
+/**
+ * Chat message role types.
+ *
+ * @remarks
+ * OpenAI uses 'developer' role while Cloudflare uses 'system'.
+ * The proxy handles translation between formats.
+ */
+export type ChatMessageRole = 'user' | 'assistant' | 'developer' | 'system' | 'tool';
 
-// https://platform.openai.com/docs/guides/text-generation
-// OpenAi: 'system' become 'developer'...
-// Cloudflare: The role of the message sender (e.g., 'user', 'assistant', 'system', 'tool').
-type ChatMessageRole = 'user' | 'assistant' | 'developer' | 'system' | 'tool';
-interface ChatMessage {
+/**
+ * Chat message structure.
+ */
+export interface ChatMessage {
   role: ChatMessageRole;
   content: string;
 }
 
-interface ToolParameterProps {
+/**
+ * Tool parameter property definition.
+ */
+export interface ToolParameterProps {
   type: string;
   description: string;
 }
 
-interface ToolParameter {
+/**
+ * Tool parameter structure.
+ */
+export interface ToolParameter {
   type: string;
   required?: string[];
   properties: Record<string, ToolParameterProps>;
 }
 
-interface Tool {
+/**
+ * Function/tool definition.
+ */
+export interface Tool {
   name: string;
   description: string;
   parameters: ToolParameter;
 }
 
-interface FunctionTool {
+/**
+ * Function tool wrapper (OpenAI format).
+ */
+export interface FunctionTool {
   type: "function";
   function: Tool;
 }
 
 /**
- * ChatCompletions Request
+ * ============================================================================
+ * CHAT COMPLETIONS API
+ * ============================================================================
  */
-interface OpenAiChatCompletionReq {
+
+/**
+ * OpenAI Chat Completion request structure.
+ *
+ * @see {@link https://platform.openai.com/docs/api-reference/chat | OpenAI Chat API}
+ */
+export interface OpenAiChatCompletionReq {
   messages: ChatMessage[];
   model: Model;
   store?: boolean | null;
@@ -191,9 +292,15 @@ interface OpenAiChatCompletionReq {
 }
 
 /**
- * Image Generation
+ * ============================================================================
+ * IMAGE GENERATION API
+ * ============================================================================
  */
-interface OpenAiImageGenerationReq {
+
+/**
+ * OpenAI Image Generation request structure.
+ */
+export interface OpenAiImageGenerationReq {
   prompt: string;
   model: string;
   n?: number;  // Number of images (default: 1)
@@ -204,22 +311,28 @@ interface OpenAiImageGenerationReq {
   user?: string;  // End-user identifier
 }
 
-interface OpenAiImageObject {
+export interface OpenAiImageObject {
   url?: string;
   b64_json?: string;
   revised_prompt?: string;
 }
 
-interface OpenAiImageGenerationRes {
+export interface OpenAiImageGenerationRes {
   created: number;
   data: OpenAiImageObject[];
   model: string;
 }
 
 /**
- * Embeddings
+ * ============================================================================
+ * EMBEDDINGS API
+ * ============================================================================
  */
-interface OpenAiEmbeddingReq {
+
+/**
+ * OpenAI Embeddings request structure.
+ */
+export interface OpenAiEmbeddingReq {
   input: string | string[];
   model: string;
   encoding_format?: 'float' | 'base64';
@@ -227,13 +340,13 @@ interface OpenAiEmbeddingReq {
   user?: string;
 }
 
-interface OpenAiEmbeddingObject {
+export interface OpenAiEmbeddingObject {
   object: 'embedding';
   index: number;
   embedding: number[] | string;
 }
 
-interface OpenAiEmbeddingRes {
+export interface OpenAiEmbeddingRes {
   object: 'list';
   data: OpenAiEmbeddingObject[];
   model: string;
@@ -244,9 +357,12 @@ interface OpenAiEmbeddingRes {
 }
 
 /**
- * Assistant
+ * ============================================================================
+ * ASSISTANTS API
+ * ============================================================================
  */
-interface ToolResources {
+
+export interface ToolResources {
   code_interpreter?: {
     file_ids: string[];
   };
@@ -255,18 +371,20 @@ interface ToolResources {
   };
 }
 
-interface CodeInterpreterTool {
+export interface CodeInterpreterTool {
   type: "code_interpreter";
 }
 
-interface FileSearchTool {
+export interface FileSearchTool {
   type: "file_search";
 }
 
-type AssistantTool = FunctionTool | CodeInterpreterTool | FileSearchTool;
+export type AssistantTool = FunctionTool | CodeInterpreterTool | FileSearchTool;
 
-// Request Interface for creating/updating an Assistant
-interface CreateAssistantRequest {
+/**
+ * Request interface for creating/updating an Assistant.
+ */
+export interface CreateAssistantRequest {
   model: Model;
   name?: string | null;
   description?: string | null;
@@ -280,8 +398,10 @@ interface CreateAssistantRequest {
   response_format?: ResponseFormat;
 }
 
-// Response Interface for Assistant operations
-interface AssistantResponse {
+/**
+ * Response interface for Assistant operations.
+ */
+export interface AssistantResponse {
   id: string;
   object: "assistant";
   created_at: number;
@@ -298,15 +418,20 @@ interface AssistantResponse {
   response_format: ResponseFormat;
 }
 
-// Full Assistant interface (can be used for type casting)
-interface Assistant extends AssistantResponse {
+/**
+ * Full Assistant interface.
+ */
+export interface Assistant extends AssistantResponse {
   // Inherits all properties from AssistantResponse
 }
 
 /**
- * Thread
+ * ============================================================================
+ * THREADS API
+ * ============================================================================
  */
-interface Thread {
+
+export interface Thread {
   id: string;
   object: "thread";
   created_at: number;
@@ -314,7 +439,7 @@ interface Thread {
   tool_resources: Record<string, any>;
 }
 
-interface ThreadRunRequest {
+export interface ThreadRunRequest {
   assistant_id: string;
   status: string;
   model: Model;
@@ -336,10 +461,9 @@ interface ThreadRunRequest {
     type: "auto" | "first" | "last";
     last_messages: number;
   };
-
 }
 
-interface ThreadRunResponse extends ThreadRunRequest {
+export interface ThreadRunResponse extends ThreadRunRequest {
   id: string;
   object: "thread.run";
   created_at: number;
@@ -352,14 +476,17 @@ interface ThreadRunResponse extends ThreadRunRequest {
   } | null;
 }
 
-interface ThreadRun extends ThreadRunResponse {
+export interface ThreadRun extends ThreadRunResponse {
   // Inherits all properties from ThreadRunResponse
 }
 
 /**
- * Cloudflare API Fetch
+ * ============================================================================
+ * CLOUDFLARE API TYPES
+ * ============================================================================
  */
-type CfModelTaskName =
+
+export type CfModelTaskName =
   | "Text Generation"
   | "Text Classification"
   | "Object Detection"
@@ -371,21 +498,21 @@ type CfModelTaskName =
   | "Text Embeddings"
   | "Summarization";
 
-
-interface CfModelTask {
+export interface CfModelTask {
   id: string;
   name: CfModelTaskName;
   description: string;
 }
 
-interface CfModel {
+export interface CfModel {
   id: string;
   name: string;
   source: string;
   description: string;
   task: CfModelTask;
 }
-interface FetchModelsResponse {
+
+export interface FetchModelsResponse {
   success: boolean;
   result: CfModel[];
   errors?: any[];
