@@ -16,10 +16,10 @@ This proxy translates OpenAI API requests into Cloudflare Workers AI format in r
 
 ```bash
 # 1. Deploy the worker
-pnpm install && pnpm run deploy
+npm install && npm run deploy
 
 # 2. Generate API key
-pnpm run api-key
+npm run api-key
 
 # 3. Make your first request
 curl https://your-worker.workers.dev/v1/chat/completions \
@@ -606,76 +606,49 @@ response = llm.predict("What is Cloudflare Workers AI?")
 
 ## 🧪 Testing
 
-### Manual Testing
+The project uses **Jest** for both unit tests and HTTP integration tests against a live worker.
 
-The `scripts/api/` directory contains test scripts for all endpoints:
+### Unit Tests
 
-```bash
-# Set environment variables
-export CLOUDFLARE_WORKER_URL="https://your-worker.workers.dev"
-export API_KEY="your-api-key"
-
-# Or create .env file:
-echo "CLOUDFLARE_WORKER_URL=https://your-worker.workers.dev" > .env
-echo "API_KEY=your-api-key" >> .env
-```
-
-**Available Test Scripts:**
+328 tests across 18 suites covering all handlers, transformers, parsers, and middleware:
 
 ```bash
-# Health check (no auth required)
-./scripts/api/health.sh
-
-# List models
-./scripts/api/models.sh
-
-# Chat completion
-./scripts/api/chat-completion.sh
-
-# Streaming chat
-./scripts/api/chat-completion-stream.sh
-
-# Tool calling
-./scripts/api/tool-call.sh
-
-# Embeddings
-./scripts/api/embeddings.sh
-
-# Image generation
-./scripts/api/generate-image.sh
-
-# Responses API
-./scripts/api/test-responses-api.sh
-
-# Responses API streaming
-./scripts/api/test-responses-streaming.sh
+npm test
 ```
 
-### Comprehensive Test Suite
+### HTTP Integration Tests
 
-Run all tests:
+33 tests across 6 suites that start a real `wrangler dev` instance and make live HTTP requests. Requires `API_KEY` set in `.env`.
 
 ```bash
-./scripts/tests/comprehensive-test.sh
+npm run test:integration
 ```
 
-Test specific features:
+The integration suite starts `wrangler dev` automatically (with remote AI binding), runs all tests, then shuts it down. Tests cover:
+
+| Suite | What it tests |
+|-------|--------------|
+| `auth` | 401 enforcement, invalid keys, public `/health` |
+| `chat` | Response envelope shape, model aliases, streaming SSE |
+| `tool-calling` | Single tools, multi-turn history (Onyx scenario), Llama auto-switch |
+| `embeddings` | Single/batch input, encoding formats, error cases |
+| `image` | url/b64_json formats, envelope shape, validation |
+| `responses-api` | `object: "response"`, `resp_` ID prefix, streaming, tool passthrough |
+
+**To run against a deployed worker instead of starting wrangler locally:**
 
 ```bash
-# Tool calling with different models
-./scripts/tests/test-tool-calling.sh
-
-# Image generation
-./scripts/tests/test-image-generation.sh
-
-# Onyx compatibility
-./scripts/tests/test-onyx-compatibility.sh
-
-# Security and authentication
-./scripts/tests/test-security.sh
+WORKER_URL=https://your-worker.workers.dev npm run test:integration
 ```
 
+### Environment Setup
 
+Create a `.env` file in the project root:
+
+```bash
+CLOUDFLARE_WORKER_URL=https://your-worker.workers.dev
+API_KEY=sk-proj-your-key-here
+```
 
 ## 🏗️ Architecture
 
@@ -961,14 +934,13 @@ Expected response:
 
 ## 📝 Version & Release Information
 
-**Current Version**: 2.1.0 (2026-02-15)
+**Current Version**: 2.2.8 (2026-03-01)
 
-### What's New in v2.1.0
+### What's New in v2.2.8
 
-- ✅ **Fixed Responses API Streaming**: Corrected `created_at` field and output array format
-- ✅ **Enhanced Streaming**: Improved SSE implementation for both Chat and Responses APIs
-- ✅ **Better Error Handling**: More informative error messages with recovery suggestions
-- ✅ **Performance Improvements**: Optimized request processing and response building
+- ✅ **Image Response Fix**: Always return both `url` and `b64_json` fields in image responses so clients like Onyx can render images regardless of requested `response_format`
+- ✅ **Test Infrastructure Overhaul**: Replaced all shell scripts with a proper Jest-based HTTP integration test suite (33 tests, 6 suites)
+- ✅ **Removed Shell Scripts**: Deleted ~30 redundant/duplicate bash test scripts; all meaningful tests migrated to TypeScript
 
 ### Key Features Summary
 
@@ -990,6 +962,11 @@ This proxy provides comprehensive OpenAI API compatibility with Cloudflare Worke
 | **Audio/Vision** | ⏸️ Not Implemented | Future consideration |
 
 ### Changelog
+
+**v2.2.8** - March 1, 2026
+- FIX: Always return both `url` and `b64_json` in image responses (Onyx compatibility)
+- CHORE: Full test infrastructure overhaul — shell scripts replaced with Jest HTTP integration tests
+- CHORE: Added `jest.integration.config.cjs` with wrangler dev auto-start/stop lifecycle
 
 **v2.1.0** - February 15, 2026
 - FIX: Responses API streaming format (created_at field, output array)
