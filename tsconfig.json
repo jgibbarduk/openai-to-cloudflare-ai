@@ -10,8 +10,12 @@
     ],
     "types": [
       "@cloudflare/workers-types",
+      "node",
+      "jest"
     ],
     "jsx": "react-jsx",
-    "jsxImportSource": "hono/jsx"
+    "jsxImportSource": "hono/jsx",
+    "skipLibCheck": true,
+    "isolatedModules": true
   }
 }

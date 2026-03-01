@@ -14,6 +14,9 @@ import { textGenerationModels } from './models';
 import { MODEL_ALIASES } from './constants';
 import type { Env, ModelType } from './types';
 
+/** Hardcoded fallback used when neither an alias nor env.DEFAULT_AI_MODEL resolves. */
+const FALLBACK_MODEL = '@cf/qwen/qwen3-30b-a3b-fp8';
+
 /**
  * ============================================================================
  * MODEL LISTING
@@ -22,20 +25,11 @@ import type { Env, ModelType } from './types';
 
 /**
  * List all available AI models from Cloudflare Workers AI.
- *
- * Returns the static list of text generation models available in the
- * Cloudflare Workers AI platform. This list is maintained in the models.ts file.
- *
- * @param env - Environment with AI binding
- * @returns Promise resolving to array of model metadata
- *
- * @example
- * const models = await listAIModels(env);
- * console.log(`Found ${models.length} models`);
+ * The env parameter is accepted but unused — the list is static and in-memory.
  */
-export async function listAIModels(env: Env): Promise<ModelType[]> {
+export async function listAIModels(_env?: Env): Promise<ModelType[]> {
   // Return static list - no need for caching as it's already in memory
-  return textGenerationModels;
+  return textGenerationModels as unknown as ModelType[];
 }
 
 /**
@@ -80,7 +74,7 @@ export function getCfModelName(modelName: string | undefined, env: Env): string 
   // Handle empty or missing model name
   if (!modelName || modelName.trim() === '') {
     console.log(`[Model] No model specified, using default: ${env.DEFAULT_AI_MODEL}`);
-    return env.DEFAULT_AI_MODEL || '@cf/qwen/qwen3-30b-a3b-fp8';
+    return env.DEFAULT_AI_MODEL || FALLBACK_MODEL;
   }
 
   const trimmedName = modelName.trim();
@@ -99,7 +93,7 @@ export function getCfModelName(modelName: string | undefined, env: Env): string 
   }
 
   // Unknown model - fall back to default with warning
-  const fallback = env.DEFAULT_AI_MODEL || '@cf/qwen/qwen3-30b-a3b-fp8';
+  const fallback = env.DEFAULT_AI_MODEL || FALLBACK_MODEL;
   console.warn(`[Model] Unknown model "${trimmedName}", falling back to default: ${fallback}`);
   return fallback;
 }
@@ -191,7 +185,7 @@ export async function displayModelsInfo(env: Env, request: Request): Promise<Res
     <ul>
       <li><strong>Total models:</strong> ${models.length}</li>
       <li><strong>OpenAI aliases:</strong> ${Object.keys(MODEL_ALIASES).length}</li>
-      <li><strong>Default model:</strong> ${env.DEFAULT_AI_MODEL || '@cf/qwen/qwen3-30b-a3b-fp8'}</li>
+      <li><strong>Default model:</strong> ${env.DEFAULT_AI_MODEL || FALLBACK_MODEL}</li>
     </ul>
   </div>
 
@@ -220,4 +214,3 @@ export async function displayModelsInfo(env: Env, request: Request): Promise<Res
     headers: { 'Content-Type': 'text/html; charset=utf-8' }
   });
 }
-

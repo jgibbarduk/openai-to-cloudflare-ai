@@ -8,7 +8,14 @@
 
 import { GPT_OSS_MODELS, MODEL_MAX_TOKENS, TOOL_CAPABLE_MODELS } from '../constants';
 import { getCfModelName } from '../model-helpers';
-import { mapTemperatureToCloudflare, mapTools } from '../utils';
+import { mapTemperatureToCloudflare, mapTools, safeByteLength, safeStringify } from '../utils';
+import type { OpenAiChatCompletionReq, Env, AiChatRequestParts, AiBaseInputOptions, AiMessagesInputOptions } from '../types';
+
+// Safeguard constants
+const MAX_MESSAGES = 100; // Maximum number of messages to send to provider
+const MAX_MESSAGE_CHARS = 16000; // Max characters per message
+const MAX_REQUEST_BYTES = 200 * 1024; // 200KB total transformed request payload cap
+const MAX_MAPPED_TOOLS = 64; // Limit mapped tools to avoid huge tool lists (raised from 5 - was dropping image_generation tool)
 
 /**
  * Validate and normalize OpenAI request for Onyx compatibility
@@ -78,6 +85,16 @@ export function validateAndNormalizeRequest(data: OpenAiChatCompletionReq, env: 
   }
 
   // Step 2: Validate and sanitize every message
+  // Debug: log a summary of each incoming message so we can see what Onyx sends
+  data.messages.forEach((msg: any, i: number) => {
+    const contentPreview = typeof msg.content === 'string'
+      ? msg.content.slice(0, 200)
+      : JSON.stringify(msg.content)?.slice(0, 200);
+    const toolCallsPreview = msg.tool_calls ? ` tool_calls=${JSON.stringify(msg.tool_calls).slice(0, 200)}` : '';
+    const toolCallIdPreview = msg.tool_call_id ? ` tool_call_id=${msg.tool_call_id}` : '';
+    console.log(`[Validation][MSG ${i}] role=${msg.role}${toolCallIdPreview}${toolCallsPreview} content=${contentPreview}`);
+  });
+
   data.messages = data.messages.map((msg: any) => {
     // Ensure message has a valid role
     let role = msg.role || "user";
@@ -105,7 +122,7 @@ export function validateAndNormalizeRequest(data: OpenAiChatCompletionReq, env: 
       console.log(`[Validation] Message content is ${typeof content}, converting to string`);
 
       // Handle array of content parts (Responses API format)
-      if (Array.isArray(content)) {
+      if (typeof content !== "string" && Array.isArray(content)) {
         content = content
           .map((part: any) => {
             // Extract text from different content part types
@@ -118,6 +135,40 @@ export function validateAndNormalizeRequest(data: OpenAiChatCompletionReq, env: 
           })
           .filter(Boolean)
           .join("\n");
+      } else if (typeof content !== "string") {
+        // Fallback stringify for objects
+        try {
+          content = JSON.stringify(content);
+        } catch (e) {
+          content = String(content);
+        }
+      }
+    }
+
+    // Enforce per-message character cap.
+    // Also handle tool messages that are JSON-stringified image arrays (e.g. "[{\"revised_prompt\":...}]")
+    if (typeof content === 'string') {
+      if (role === 'tool') {
+        // Try to detect a stringified image result array
+        if ((content.startsWith('[') && content.includes('revised_prompt')) ||
+            content.includes('"b64_json"') ||
+            content.includes('data:image')) {
+          let revisedPrompt = '';
+          try {
+            const parsed = JSON.parse(content);
+            const item = Array.isArray(parsed) ? parsed[0] : parsed;
+            if (item?.revised_prompt) revisedPrompt = item.revised_prompt;
+            else if (item?.data?.[0]?.revised_prompt) revisedPrompt = item.data[0].revised_prompt;
+          } catch { /* not valid JSON */ }
+          console.log(`[Validation] Tool message is stringified image result, replacing with success summary`);
+          content = `Image generation succeeded. Revised prompt: "${revisedPrompt}". The image has been displayed to the user.`;
+        } else if (content.length > MAX_MESSAGE_CHARS) {
+          console.log(`[Validation] Truncating tool message content from ${content.length} to ${MAX_MESSAGE_CHARS} chars`);
+          content = content.slice(0, MAX_MESSAGE_CHARS);
+        }
+      } else if (content.length > MAX_MESSAGE_CHARS) {
+        console.log(`[Validation] Truncating message content from ${content.length} to ${MAX_MESSAGE_CHARS} chars`);
+        content = content.slice(0, MAX_MESSAGE_CHARS);
       }
     }
 
@@ -131,11 +182,19 @@ export function validateAndNormalizeRequest(data: OpenAiChatCompletionReq, env: 
     };
   });
 
+  // Enforce maximum number of messages by trimming oldest messages if needed
+  if (data.messages.length > MAX_MESSAGES) {
+    console.log(`[Validation] Trimming messages from ${data.messages.length} to ${MAX_MESSAGES}`);
+    // Keep the latest messages (assume end of array is most recent)
+    data.messages = data.messages.slice(-MAX_MESSAGES);
+  }
+
   // Step 4: Strip unsupported OpenAI fields
+  // NOTE: response_format is intentionally kept — it is checked downstream in
+  // transformChatCompletionRequest to inject a JSON system prompt when type=json_object.
   const unsupportedFields = [
     "functions",
     "function_call",
-    "response_format",
     "parallel_tool_calls",
     "reasoning_effort",
     "modalities",
@@ -171,18 +230,17 @@ export function transformChatCompletionRequest(request: OpenAiChatCompletionReq,
   let resolvedModel = getCfModelName(request?.model, env);
   const modelMaxTokensLimit = MODEL_MAX_TOKENS[resolvedModel] || 4096;  // Default to 4096 if not specified
 
-  // IMPORTANT: Cloudflare Workers AI has model-specific limits:
-  // - Hermes 2 Pro: max 1024 tokens
-  // - Qwen3, Llama: max 4096 tokens
-  // - Context window: 32768 tokens (prompt + completion combined)
-  //
-  // For reasoning models like Qwen, enforce a minimum to ensure enough budget
+  // For reasoning models like Qwen, enforce a minimum token floor so the model
+  // has enough budget to reason and respond. A small floor (512) is sufficient —
+  // do NOT set this to modelMaxTokensLimit or the user's requested value is always ignored.
   const isReasoningModel = resolvedModel.includes('qwen');
-  const MIN_TOKENS_FOR_REASONING = isReasoningModel ? 4096 : modelMaxTokensLimit;
+  const MIN_TOKENS_FOR_REASONING = isReasoningModel ? 512 : 0;
 
-  // Clamp to model's specific limit
-  const maxTokens = Math.max(Math.min(requestedMaxTokens, modelMaxTokensLimit),
-                             Math.min(MIN_TOKENS_FOR_REASONING, modelMaxTokensLimit));
+  // Clamp to model's specific limit, then apply the minimum floor
+  const maxTokens = Math.max(
+    Math.min(requestedMaxTokens, modelMaxTokensLimit),
+    MIN_TOKENS_FOR_REASONING
+  );
 
   if (maxTokens !== requestedMaxTokens) {
     console.log(`[Transform] Adjusted max_tokens from ${requestedMaxTokens} to ${maxTokens} (model ${resolvedModel} has limit: ${modelMaxTokensLimit})`);
@@ -238,10 +296,14 @@ export function transformChatCompletionRequest(request: OpenAiChatCompletionReq,
   }
 
   // Map tools AFTER model switching and support check
-  const mappedTools = supportsTools && request.tools ? mapTools(request.tools) : undefined;
+  // Limit tools to a reasonable cap to avoid huge payloads
+  const toolsToMap = (request.tools && Array.isArray(request.tools)) ? request.tools.slice(0, MAX_MAPPED_TOOLS) : undefined;
+  const mappedTools = supportsTools && toolsToMap ? mapTools(toolsToMap) : undefined;
 
   if (mappedTools) {
-    console.log(`[Transform] Mapped ${mappedTools.length} tools for ${resolvedModel}`);
+    console.log(`[Transform] Mapped ${mappedTools.length} tools for ${resolvedModel} (capped to ${MAX_MAPPED_TOOLS})`);
+  } else if (request.tools && request.tools.length > 0) {
+    console.log(`[Transform] Tools present but not mapped (supportsTools=${supportsTools}) or mapped count is zero`);
   }
 
   // GPT-OSS models - use standard messages format (NOT Harmony instructions/input)
@@ -332,9 +394,26 @@ export function transformChatCompletionRequest(request: OpenAiChatCompletionReq,
     ];
   }
 
-  return {
-    model: resolvedModel,
-    options: options
-  };
-}
+  // Final safety check: Prevent excessively large transformed payloads
+  try {
+    const preview = safeStringify({ model: resolvedModel, options });
+    const bytes = safeByteLength(preview);
+    if (bytes > MAX_REQUEST_BYTES) {
+      console.warn(`[Transform] Transformed request size ${bytes} bytes exceeds cap ${MAX_REQUEST_BYTES}. Attempting to compact messages.`);
+      // Compact strategy: remove older messages until under cap
+      let msgs = options.messages || [];
+      while (safeByteLength(safeStringify({ model: resolvedModel, options: { ...options, messages: msgs } })) > MAX_REQUEST_BYTES && msgs.length > 1) {
+        msgs = msgs.slice(Math.floor(msgs.length / 2)); // keep newest half
+      }
+      options.messages = msgs;
+      console.log(`[Transform] Compacted messages to ${options.messages.length} items to meet byte cap`);
+    }
+  } catch (e) {
+    console.warn('[Transform] Failed to compute transformed request size:', e);
+  }
 
+   return {
+     model: resolvedModel,
+     options: options
+   };
+ }

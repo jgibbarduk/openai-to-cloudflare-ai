@@ -11,11 +11,13 @@
  */
 
 import { errorResponse, serverError, validationError } from '../errors';
-import { getCfModelName } from '../model-helpers';
+import { getCfModelName, listAIModels } from '../model-helpers';
 import { validateAndNormalizeRequest, transformChatCompletionRequest } from '../transformers/request.transformer';
 import { extractGptOssResponse, extractOpenAiCompatibleResponse, sanitizeAiResponse } from '../parsers/response.parser';
 import { buildOpenAIChatResponse, buildOpenAIResponsesFormat } from '../builders/response.builder';
 import type { Env, OpenAiChatCompletionReq, Model, AiJsonResponse, UsageStats } from '../types';
+import { handleEmbeddings } from './embeddings.handler';
+import { safeByteLength, safeStringify } from '../utils';
 
 /**
  * ============================================================================
@@ -36,78 +38,6 @@ interface ResponsesApiParams {
   truncation?: string;
 }
 
-/**
- * ============================================================================
- * QWEN WORKAROUNDS
- * ============================================================================
- */
-
-/**
- * Apply Qwen-specific workarounds for tool calling.
- *
- * Qwen has a quirk where it stops immediately after tool results with minimal output.
- * This function adds continuation prompts to force proper responses.
- *
- * @param messages - Chat messages array
- */
-function applyQwenToolWorkarounds(messages: any[]): void {
-  const toolMessages = messages.filter((msg: any) => msg.role === 'tool');
-
-  if (toolMessages.length === 0) {
-    return;
-  }
-
-  // Check for successful tool results
-  const hasSuccessfulToolResults = toolMessages.some((msg: any) => {
-    const content = msg.content || '';
-    const hasError =
-      content.includes('"error"') ||
-      content.includes('error:') ||
-      content.includes('Tool execution failed') ||
-      content.includes('Failed to execute') ||
-      content.includes('internal error') ||
-      content.length < 20;
-    return !hasError;
-  });
-
-  // Check for tool errors
-  const hasToolErrors = toolMessages.some((msg: any) => {
-    const content = msg.content || '';
-    return content.includes('"error"') ||
-           content.includes('error:') ||
-           content.includes('Tool execution failed') ||
-           content.includes('Failed to execute') ||
-           content.includes('internal error');
-  });
-
-  const lastMessage = messages[messages.length - 1];
-
-  if (hasSuccessfulToolResults) {
-    const isAlreadyContinuation = lastMessage?.role === 'user' &&
-      (lastMessage?.content?.includes('provide') ||
-       lastMessage?.content?.includes('answer') ||
-       lastMessage?.content?.includes('Based on'));
-
-    if (!isAlreadyContinuation) {
-      console.log("[Chat] QWEN WORKAROUND: Adding continuation prompt for tool results");
-      messages.push({
-        role: "user",
-        content: "Based on the tool results above, please provide a complete answer to my original question."
-      });
-    }
-  } else if (hasToolErrors) {
-    const isAlreadyErrorGuidance = lastMessage?.role === 'user' &&
-      lastMessage?.content?.includes('error');
-
-    if (!isAlreadyErrorGuidance) {
-      console.log("[Chat] QWEN WORKAROUND: Adding error handling prompt");
-      messages.push({
-        role: "user",
-        content: "The tool encountered an error. Please explain what went wrong and suggest what we can try next."
-      });
-    }
-  }
-}
 
 /**
  * ============================================================================
@@ -136,7 +66,7 @@ function buildChatResponse(
       tool_calls,
       reasoning_content,
       usage,
-      requestParams
+      requestParams as any
     );
   } else {
     // Build Chat Completions format
@@ -191,7 +121,8 @@ export async function handleStreamingResponse(
       const decoder = new TextDecoder();
       let buffer = '';
       let hasSeenFirstChunk = false;
-      let toolCalls: any[] = [];
+      // Map from tool call index → accumulated tool call object
+      const toolCallsMap: Map<number, { id: string; type: string; function: { name: string; arguments: string } }> = new Map();
 
       while (true) {
         const { done, value } = await reader.read();
@@ -252,9 +183,31 @@ export async function handleStreamingResponse(
               reasoningContent = parsed.reasoning_content;
             }
 
-            // Handle tool calls accumulation
+            // Accumulate tool call deltas — reassemble by index into complete objects.
+            // OpenAI streaming sends tool calls as incremental deltas:
+            //   chunk 1: { index: 0, id: "call_abc", type: "function", function: { name: "generate_image", arguments: "" } }
+            //   chunk 2: { index: 0, function: { arguments: '{"prompt":' } }
+            //   chunk 3: { index: 0, function: { arguments: '"a dragon"}' } }
             if (toolCallsChunk) {
-              toolCalls.push(...toolCallsChunk);
+              for (const delta of toolCallsChunk) {
+                const idx = delta.index ?? 0;
+                if (!toolCallsMap.has(idx)) {
+                  toolCallsMap.set(idx, {
+                    id: delta.id || '',
+                    type: delta.type || 'function',
+                    function: { name: '', arguments: '' }
+                  });
+                }
+                const existing = toolCallsMap.get(idx)!;
+                if (delta.id) existing.id = delta.id;
+                if (delta.function?.name) existing.function.name += delta.function.name;
+                if (delta.function?.arguments !== undefined && delta.function?.arguments !== null) {
+                  const args = typeof delta.function.arguments === 'object'
+                    ? JSON.stringify(delta.function.arguments)
+                    : delta.function.arguments;
+                  existing.function.arguments += args;
+                }
+              }
             }
 
             // Build OpenAI-compatible chunk
@@ -286,10 +239,12 @@ export async function handleStreamingResponse(
               chunk.choices[0].delta.reasoning_content = reasoningContent;
             }
 
-            // Add tool calls if present
-            if (toolCallsChunk && toolCallsChunk.length > 0) {
-              chunk.choices[0].delta.tool_calls = toolCallsChunk;
-            }
+            // Add tool calls if present — normalize arguments to always be a JSON string
+            // (Cloudflare may return arguments as a parsed object instead of a JSON string)
+            // NOTE: Do NOT forward raw streaming deltas to the client — Cloudflare's tool call
+            // delta format may not be standard OpenAI incremental format. Instead we accumulate
+            // server-side and send complete assembled tool calls in the final chunk below.
+            // if (toolCallsChunk && toolCallsChunk.length > 0) { ... }
 
             // Only send chunk if it has meaningful data (role, content, reasoning_content, tool_calls, or finish_reason)
             const hasMeaningfulData =
@@ -309,7 +264,12 @@ export async function handleStreamingResponse(
         }
       }
 
-      // Send final chunk with finish_reason
+      // Send final chunk with finish_reason and complete tool calls
+      const assembledToolCalls = Array.from(toolCallsMap.values());
+      if (assembledToolCalls.length > 0) {
+        console.log(`[Chat] Assembled ${assembledToolCalls.length} tool call(s):`, assembledToolCalls.map(tc => `${tc.function.name}(${tc.function.arguments.slice(0, 100)})`).join(', '));
+      }
+
       const finalChunk = {
         id: requestId,
         object: 'chat.completion.chunk',
@@ -317,8 +277,20 @@ export async function handleStreamingResponse(
         model,
         choices: [{
           index: 0,
-          delta: {},
-          finish_reason: toolCalls.length > 0 ? 'tool_calls' : 'stop'
+          delta: assembledToolCalls.length > 0 ? {
+            tool_calls: assembledToolCalls.map((tc, i) => ({
+              index: i,
+              id: tc.id,
+              type: tc.type,
+              function: {
+                name: tc.function.name,
+                arguments: typeof tc.function.arguments === 'object'
+                  ? JSON.stringify(tc.function.arguments)
+                  : tc.function.arguments
+              }
+            }))
+          } : {},
+          finish_reason: assembledToolCalls.length > 0 ? 'tool_calls' : 'stop'
         }]
       };
 
@@ -331,20 +303,18 @@ export async function handleStreamingResponse(
     } catch (error) {
       console.error('[Chat] Streaming error:', error);
 
-      // Try to send an error chunk
+      // Send an SSE error event so the client knows the stream failed
       try {
-        const errorChunk = {
+        const errMsg = error instanceof Error ? error.message : 'Stream processing failed';
+        const errorEvent = JSON.stringify({
           id: requestId,
           object: 'chat.completion.chunk',
           created,
           model,
-          choices: [{
-            index: 0,
-            delta: { content: ' ' },
-            finish_reason: 'stop'
-          }]
-        };
-        await writer.write(encoder.encode(`data: ${JSON.stringify(errorChunk)}\n\n`));
+          choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+          error: { message: errMsg, type: 'api_error' }
+        });
+        await writer.write(encoder.encode(`data: ${errorEvent}\n\n`));
         await writer.write(encoder.encode('data: [DONE]\n\n'));
       } catch (e) {
         console.error('[Chat] Failed to send error chunk:', e);
@@ -378,21 +348,130 @@ export async function handleChatCompletions(request: Request, env: Env): Promise
 
   try {
     // Parse request body
-    const data = await request.json() as OpenAiChatCompletionReq;
+    const data = await request.json() as OpenAiChatCompletionReq & any;
+
+    // If the client explicitly requests an embeddings model on the chat endpoint,
+    // attempt to forward to the embeddings handler when the request looks like
+    // an embeddings request (has an `input` field or consists only of user messages).
+    // Fetch model list once and reuse for both checks below.
+    let allModels: Awaited<ReturnType<typeof listAIModels>> = [];
+    if (data?.model) {
+      try {
+        allModels = await listAIModels(env);
+        const resolved = getCfModelName(data.model, env);
+        const modelInfo = allModels.find(m => (m.id === resolved || m.name === resolved));
+        if (modelInfo && modelInfo.taskName === 'Text Embeddings') {
+          // If caller sent an OpenAI-style embeddings payload (input) forward directly
+          if ('input' in data) {
+            return handleEmbeddings(request, env);
+          }
+
+          // If caller sent chat messages but they're all user messages, coerce them to embeddings
+          if (Array.isArray(data.messages) && data.messages.length > 0 && data.messages.every((m: any) => m.role === 'user')) {
+            const inputs = data.messages.map((m: any) => m.content || '');
+            const embReq = new Request(request.url, {
+              method: 'POST',
+              headers: request.headers,
+              body: JSON.stringify({ model: data.model, input: inputs })
+            });
+            return handleEmbeddings(embReq, env);
+          }
+
+          // Otherwise, provide a validation error directing them to /v1/embeddings
+          return validationError(
+            `Model "${data.model || resolved}" is an embeddings model. Use the /v1/embeddings endpoint instead.`,
+            'model'
+          );
+        }
+      } catch (e) {
+        console.warn('[Chat] Could not auto-route embeddings model:', e);
+      }
+    }
 
     // Validate and normalize request
     const validatedData = validateAndNormalizeRequest(data, env);
 
-    // Apply Qwen-specific workarounds if needed
-    applyQwenToolWorkarounds(validatedData.messages);
 
     // Transform to Cloudflare format
     const { model, options } = transformChatCompletionRequest(validatedData, env);
 
+    // NEW: Prevent using embedding models with chat/completions endpoint
+    try {
+      const modelInfo = allModels.find(m => (m.id === model || m.name === model));
+      if (modelInfo && modelInfo.taskName === 'Text Embeddings') {
+        return validationError(
+          `Model "${validatedData.model || model}" is an embeddings model. Use the /v1/embeddings endpoint instead.`,
+          'model'
+        );
+      }
+    } catch (e) {
+      console.warn('[Chat] Could not verify model type before chat call:', e);
+    }
+
     console.log(`[Chat] Model: ${model}, Stream: ${options?.stream}, Messages: ${(options as any)?.messages?.length || 0}`);
 
-    // Call Cloudflare AI
-    const aiRes = await env.AI.run(model, options);
+    // Log detailed transformed request payload (size + preview)
+    try {
+      const outgoing = safeStringify({ model, options });
+      const outBytes = safeByteLength(outgoing);
+      const head = outgoing.slice(0, 2000);
+      const tail = outgoing.length > 2000 ? outgoing.slice(-200) : '';
+      console.log(`[Chat][OUTGOING] Transformed request size: ${outBytes} bytes`);
+      console.log(`[Chat][OUTGOING] Preview (head): ${head}${tail ? '...[truncated]...'+tail : ''}`);
+    } catch (e) {
+      console.warn('[Chat][OUTGOING] Failed to stringify outgoing payload for logging:', e);
+    }
+
+    // Call Cloudflare AI (with provider response logging)
+    let aiRes: any;
+    try {
+      aiRes = await env.AI.run(model, options);
+    } catch (err: any) {
+      // Log provider error body if available
+      console.error('[Chat][PROVIDER] Call threw an exception:', err && err.message ? err.message : err);
+      if (err && err.response) {
+        try {
+          let bodyText: string;
+          if (typeof (err.response?.text) === 'function') {
+            bodyText = await err.response.text();
+          } else {
+            bodyText = safeStringify(err.response);
+          }
+          console.error('[Chat][PROVIDER] Error response body (preview):', bodyText.slice(0, 2000));
+        } catch (e) {
+          console.warn('[Chat][PROVIDER] Failed to read error response body:', e);
+        }
+      }
+      throw err;
+    }
+
+    // Log provider response preview for non-streaming cases
+    try {
+      if (aiRes instanceof ReadableStream) {
+        console.log('[Chat][PROVIDER] Received streaming response (ReadableStream) from provider');
+      } else if (typeof aiRes === 'object' && aiRes !== null) {
+        // Stringify with size guard
+        const respText = safeStringify(aiRes, { maxLength: 200000 });
+        const respBytes = safeByteLength(respText);
+        const head = respText.slice(0, 2000);
+        const tail = respText.length > 2000 ? respText.slice(-200) : '';
+        console.log(`[Chat][PROVIDER] Received response size: ${respBytes} bytes`);
+        console.log(`[Chat][PROVIDER] Response preview (head): ${head}${tail ? '...<truncated>...' + tail : ''}`);
+
+        // If provider included an `error` field, log it explicitly
+        if ('error' in aiRes) {
+          try {
+            console.error('[Chat][PROVIDER] Provider returned error object:', safeStringify((aiRes as any).error).slice(0, 2000));
+          } catch (e) {
+            console.error('[Chat][PROVIDER] Provider returned error (unable to stringify)');
+          }
+        }
+      } else {
+        console.log('[Chat][PROVIDER] Provider returned non-object response:', String(aiRes).slice(0, 2000));
+      }
+    } catch (e) {
+      console.warn('[Chat][PROVIDER] Failed to log provider response preview:', e);
+    }
 
     // Handle streaming response
     if (options.stream && aiRes instanceof ReadableStream) {
@@ -452,4 +531,3 @@ export async function handleChatCompletions(request: Request, env: Env): Promise
     );
   }
 }
-

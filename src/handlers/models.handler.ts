@@ -75,14 +75,8 @@ export async function handleListModels(env: Env): Promise<Response> {
     // Fetch available models from Cloudflare Workers AI
     const models = await listAIModels(env);
 
-    if (!models || models.length === 0) {
-      console.warn('[Models] No models available');
-      return serverError('No models available', 'Failed to retrieve model list');
-    }
-
-    // Transform to OpenAI-compatible format
-    // Only include required fields: id and object
-    const openaiModels: OpenAIModelListItem[] = models.map(m => ({
+    // Transform to OpenAI-compatible format (empty list is valid, not an error)
+    const openaiModels: OpenAIModelListItem[] = (models ?? []).map(m => ({
       id: m.id || m.name,
       object: "model" as const
     }));
@@ -96,10 +90,7 @@ export async function handleListModels(env: Env): Promise<Response> {
     console.log(`[Models] Returning ${openaiModels.length} models (took ${duration}ms)`);
 
     return new Response(JSON.stringify(response), {
-      headers: {
-        'Content-Type': 'application/json',
-        'Cache-Control': 'public, max-age=3600' // Cache for 1 hour
-      }
+      headers: { 'Content-Type': 'application/json' }
     });
 
   } catch (error) {

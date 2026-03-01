@@ -31,7 +31,8 @@ export type OpenAIErrorType =
   | 'api_error'                  // Internal server error
   | 'invalid_api_key'            // Specific auth error
   | 'server_error'               // Generic server error
-  | 'service_unavailable';       // Service temporarily unavailable
+  | 'service_unavailable'        // Service temporarily unavailable
+  | 'not_implemented';           // Feature not implemented
 
 /**
  * OpenAI error response structure.
@@ -181,4 +182,3 @@ export function serverError(message: string = "Internal server error", details?:
 export function rateLimitError(message: string = "Rate limit exceeded"): Response {
   return errorResponse(message, 429, "rate_limit_error");
 }
-

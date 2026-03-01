@@ -29,6 +29,7 @@
  * - handlers/health.handler.ts     → Health checks
  * - handlers/assistants.handler.ts → Assistants API (stub)
  * - handlers/threads.handler.ts    → Threads API (stub)
+ * - handlers/files.handler.ts      → File uploads API (new)
  *
  * Authentication is handled by:
  * - middleware/auth.middleware.ts  → Bearer token validation
@@ -41,6 +42,7 @@
  * ✅ POST /v1/responses           - OpenAI Responses API format
  * ✅ POST /v1/embeddings          - Text embeddings generation
  * ✅ POST /v1/images/generations  - Image generation (DALL-E → Flux)
+ * ✅ POST /v1/files               - File uploads (new)
  * ✅ GET  /v1/models              - List available models
  * ✅ GET  /health                 - Health check (no auth required)
  * ✅ GET  /models/search          - Model info page (debug)
@@ -77,6 +79,7 @@ import { handleAssistants } from './handlers/assistants.handler';
 import { handleThreads } from './handlers/threads.handler';
 import { handleResponses } from './handlers/responses.handler';
 import { handleChatCompletions } from './handlers/chat.handler';
+import { handleFiles } from './handlers/files.handler';
 
 // Middleware
 import { authenticateRequest, requiresAuth } from './middleware/auth.middleware';
@@ -88,12 +91,49 @@ import { displayModelsInfo } from './model-helpers';
 import type { Env } from './types';
 
 // ============================================================================
+// ROUTE TABLE
+// ============================================================================
+
+/**
+ * Route entry: [HTTP method ('*' = any), path matcher (string = exact, fn = predicate), handler]
+ */
+type RouteHandler = (request: Request, env: Env, url: URL) => Promise<Response>;
+type RouteMatcher = string | ((pathname: string) => boolean);
+
+const ROUTES: Array<[string, RouteMatcher, RouteHandler]> = [
+  // Debug
+  ['GET',  '/models/search',          (req, env) => displayModelsInfo(env, req)],
+  // Models
+  ['GET',  '/v1/models',              (_req, env) => handleListModels(env)],
+  // Core AI endpoints
+  ['POST', '/v1/chat/completions',    (req, env) => handleChatCompletions(req, env)],
+  ['POST', '/v1/responses',           (req, env) => handleResponses(req, env)],
+  ['POST', '/v1/images/generations',  (req, env) => handleImageGeneration(req, env)],
+  ['POST', '/v1/embeddings',          (req, env) => handleEmbeddings(req, env)],
+  ['POST', '/v1/files',               (req, env) => handleFiles(req, env)],
+  // Stubs (prefix match)
+  ['*',    (p) => p.startsWith('/v1/assistants'), (req, env, url) => handleAssistants(req, env, url)],
+  ['*',    (p) => p.startsWith('/v1/threads'),    (req, env, url) => handleThreads(req, env, url)],
+];
+
+/**
+ * Resolve the handler for an incoming request, or return null for 404.
+ */
+function matchRoute(method: string, pathname: string): RouteHandler | null {
+  for (const [routeMethod, matcher, handler] of ROUTES) {
+    const methodMatch = routeMethod === '*' || routeMethod === method;
+    const pathMatch = typeof matcher === 'string' ? pathname === matcher : matcher(pathname);
+    if (methodMatch && pathMatch) return handler;
+  }
+  return null;
+}
+
+// ============================================================================
 // WORKER EXPORT
 // ============================================================================
 
 /**
  * Cloudflare Workers entry point.
- * Handles all incoming HTTP requests and routes them to appropriate handlers.
  */
 export default {
   /**
@@ -106,10 +146,12 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     const startTime = Date.now();
+    // Short request ID for log correlation (last 8 chars of a UUID)
+    const requestId = crypto.randomUUID().slice(-8);
 
     // Log incoming request
     console.log(
-      `[${new Date().toISOString()}] [v${PROXY_VERSION}] ` +
+      `[${new Date().toISOString()}] [v${PROXY_VERSION}] [${requestId}] ` +
       `${request.method} ${url.pathname}`
     );
 
@@ -138,61 +180,11 @@ export default {
     // ========================================================================
 
     try {
-      let response: Response;
+      const handler = matchRoute(request.method, url.pathname);
 
-      // Route based on pathname and method
-      switch (true) {
-        // ----------------------------------------------------------------
-        // Debug/Info Endpoints
-        // ----------------------------------------------------------------
-
-        case url.pathname === '/models/search' && request.method === 'GET':
-          response = await displayModelsInfo(env, request);
-          break;
-
-        // ----------------------------------------------------------------
-        // OpenAI API Endpoints
-        // ----------------------------------------------------------------
-
-        case url.pathname === '/v1/models' && request.method === 'GET':
-          response = await handleListModels(env);
-          break;
-
-        case url.pathname === '/v1/chat/completions' && request.method === 'POST':
-          response = await handleChatCompletions(request, env);
-          break;
-
-        case url.pathname === '/v1/responses' && request.method === 'POST':
-          response = await handleResponses(request, env);
-          break;
-
-        case url.pathname === '/v1/images/generations' && request.method === 'POST':
-          response = await handleImageGeneration(request, env);
-          break;
-
-        case url.pathname === '/v1/embeddings' && request.method === 'POST':
-          response = await handleEmbeddings(request, env);
-          break;
-
-        // ----------------------------------------------------------------
-        // Assistants & Threads API (Stubs)
-        // ----------------------------------------------------------------
-
-        case url.pathname.startsWith('/v1/assistants'):
-          response = await handleAssistants(request, env, url);
-          break;
-
-        case url.pathname.startsWith('/v1/threads'):
-          response = await handleThreads(request, env, url);
-          break;
-
-        // ----------------------------------------------------------------
-        // 404 - Not Found
-        // ----------------------------------------------------------------
-
-        default:
-          response = notFoundError();
-      }
+      const response = handler
+        ? await handler(request, env, url)
+        : notFoundError();
 
       // ====================================================================
       // RESPONSE LOGGING
@@ -200,20 +192,16 @@ export default {
 
       const latency = Date.now() - startTime;
       console.log(
-        `[${new Date().toISOString()}] ${url.pathname} ` +
+        `[${new Date().toISOString()}] [${requestId}] ${url.pathname} ` +
         `completed in ${latency}ms`
       );
 
       return response;
 
     } catch (error) {
-      // ====================================================================
-      // ERROR HANDLING
-      // ====================================================================
-
       const latency = Date.now() - startTime;
       console.error(
-        `[${new Date().toISOString()}] Unhandled error after ${latency}ms:`,
+        `[${new Date().toISOString()}] [${requestId}] Unhandled error after ${latency}ms:`,
         error
       );
 

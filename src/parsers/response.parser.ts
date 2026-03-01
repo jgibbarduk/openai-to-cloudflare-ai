@@ -315,9 +315,12 @@ export function extractOpenAiCompatibleResponse(res: any, model: string): AiJson
       // Transform to Cloudflare format
       const toolCalls = message.tool_calls.map((tc: any) => ({
         name: tc.function?.name || tc.name,
-        arguments: typeof tc.function?.arguments === 'string'
-          ? JSON.parse(tc.function.arguments)
-          : tc.function?.arguments || tc.arguments
+        arguments: (() => {
+          if (typeof tc.function?.arguments === 'string') {
+            try { return JSON.parse(tc.function.arguments); } catch { return {}; }
+          }
+          return tc.function?.arguments ?? tc.arguments ?? {};
+        })()
       }));
 
       return {

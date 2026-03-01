@@ -1,0 +1,77 @@
+version: '3'
+
+vars:
+  # Use npx if wrangler isn't globally installed
+  wrangler_cmd: "npx"
+  node: "npm"
+
+tasks:
+  # Default task - show available tasks
+  default:
+    desc: "Show available tasks"
+    cmds:
+      - task --list
+
+  install:
+    desc: "Install project dependencies (npm)"
+    cmds:
+      - "{{.node}} install"
+
+  test:
+    desc: "Run full test suite (Jest). Depends on install."
+    deps: [install]
+    cmds:
+      - "{{.node}} test"
+
+  typecheck:
+    desc: "Run TypeScript type checking"
+    deps: [install]
+    cmds:
+      - npx tsc --noEmit
+
+  dev:
+    desc: "Start Cloudflare Workers AI locally with wrangler dev"
+    cmds:
+      - "{{.wrangler_cmd}} wrangler dev --port 3000 --ip 0.0.0.0 --remote src/index.ts"
+    interactive: true
+
+  deploy:
+    desc: "Deploy to Cloudflare with wrangler"
+    deps: [test]
+    cmds:
+      - "{{.wrangler_cmd}} wrangler deploy --minify src/index.ts"
+
+  deploy-and-test:
+    desc: "Run deployment script and basic sanity checks"
+    deps: [install]
+    cmds:
+      - bash scripts/deployment/deploy-and-test.sh
+
+  tail-logs:
+    desc: "Tail Cloudflare worker logs (wrangler tail). Use SERVICE_NAME env var if needed."
+    cmds:
+      - echo "Starting wrangler tail (press Ctrl+C to stop)"
+      - "{{.wrangler_cmd}} wrangler tail --format pretty"
+    interactive: true
+
+  clean:
+    desc: "Remove build artifacts and node_modules"
+    cmds:
+      - rm -rf node_modules .build .cache .parcel-cache
+
+  wrangler-check:
+    desc: "Check wrangler version and config"
+    cmds:
+      - "{{.wrangler_cmd}} wrangler --version"
+      - cat wrangler.toml || true
+
+  help:
+    desc: "Print this file and usage hints"
+    cmds:
+      - echo "Taskfile usage examples:"
+      - echo "  task install         # install deps"
+      - echo "  task test            # run tests"
+      - echo "  task dev             # start wrangler dev"
+      - echo "  task deploy          # deploy to Cloudflare"
+      - echo "  task tail-logs       # tail logs with wrangler"
+

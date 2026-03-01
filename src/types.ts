@@ -117,9 +117,11 @@ export interface UsageStats {
 
 /**
  * Tool call structure returned by models that support function calling.
+ * `arguments` may arrive as a JSON-encoded string (wire format) or as a
+ * pre-parsed object (after internal normalization).
  */
 export interface ToolCall {
-  arguments: Record<string, any>;
+  arguments: string | Record<string, any>;
   name: string;
 }
 
@@ -418,12 +420,8 @@ export interface AssistantResponse {
   response_format: ResponseFormat;
 }
 
-/**
- * Full Assistant interface.
- */
-export interface Assistant extends AssistantResponse {
-  // Inherits all properties from AssistantResponse
-}
+/** Full Assistant type — identical to AssistantResponse. */
+export type Assistant = AssistantResponse;
 
 /**
  * ============================================================================
@@ -476,9 +474,8 @@ export interface ThreadRunResponse extends ThreadRunRequest {
   } | null;
 }
 
-export interface ThreadRun extends ThreadRunResponse {
-  // Inherits all properties from ThreadRunResponse
-}
+/** Full ThreadRun type — identical to ThreadRunResponse. */
+export type ThreadRun = ThreadRunResponse;
 
 /**
  * ============================================================================

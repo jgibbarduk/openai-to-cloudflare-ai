@@ -162,14 +162,55 @@ export async function handleImageGeneration(request: Request, env: Env): Promise
 
     console.log(`[Image] Generating image with prompt (${prompt.length} chars)`);
 
+    // FLUX.2 models require a specific multipart input format via the Workers AI binding.
+    // FormData must be serialized through a Response to get the body stream + content-type
+    // header with the correct boundary, then passed as { multipart: { body, contentType } }.
+    let aiInput: any = imageInput;
+    if (model.includes('flux-2')) {
+      const formData = new FormData();
+      formData.append('prompt', prompt);
+      if (imageInput.width) formData.append('width', String(imageInput.width));
+      if (imageInput.height) formData.append('height', String(imageInput.height));
+      const formResponse = new Response(formData);
+      const formStream = formResponse.body;
+      const formContentType = formResponse.headers.get('content-type')!;
+      aiInput = { multipart: { body: formStream, contentType: formContentType } };
+      console.log(`[Image] Using multipart input for ${model}`);
+    }
+
     // Call Cloudflare Workers AI
     let aiRes;
     try {
-      aiRes = await env.AI.run(model as any, imageInput);
+      aiRes = await env.AI.run(model as any, aiInput);
       console.log(`[Image] Generation complete, response type: ${typeof aiRes}`);
     } catch (error: any) {
       const errorMsg = error?.message || String(error);
       console.error(`[Image] AI generation failed:`, errorMsg);
+
+      // Content policy violation (Cloudflare error 3030).
+      // We cannot return a 4xx here — Onyx's image_generation_tool.py unconditionally wraps
+      // ANY exception (including litellm's ContentPolicyViolationError) into ToolExecutionException
+      // and re-raises it as a fatal session crash. Instead we return a 200 with a tiny 1x1
+      // transparent PNG placeholder and embed the error in revised_prompt so the LLM sees it.
+      if (errorMsg.includes('3030') || errorMsg.includes('flagged') || errorMsg.includes('content policy')) {
+        console.warn(`[Image] Content policy violation — returning placeholder image to avoid Onyx crash`);
+        // 1x1 transparent PNG (minimal valid PNG, base64-encoded)
+        const TRANSPARENT_PNG_B64 =
+          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
+        const placeholderResponse: OpenAiImageGenerationRes = {
+          created: Math.floor(Date.now() / 1000),
+          data: [{
+            b64_json: TRANSPARENT_PNG_B64,
+            url: `data:image/png;base64,${TRANSPARENT_PNG_B64}`,
+            revised_prompt: `[Image generation failed: the prompt was rejected by the content policy. Please choose a different prompt. Details: ${errorMsg}]`
+          }],
+          model: requestedModel
+        };
+        return new Response(JSON.stringify(placeholderResponse), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
 
       // Handle specific error types
       if (errorMsg.includes('authentication') || errorMsg.includes('unauthorized') ||
@@ -236,27 +277,27 @@ export async function handleImageGeneration(request: Request, env: Env): Promise
 
     console.log(`[Image] Final image data: ${imageData.length} chars`);
 
-    // Format response based on requested format
-    const imageObject: OpenAiImageObject = {};
+    // Normalise to a clean base64 string (strip data URI prefix if present)
+    let cleanBase64: string;
+    if (imageData.startsWith('data:image')) {
+      cleanBase64 = imageData.split(',')[1];
+    } else {
+      // Already raw base64 (FLUX.2 returns this directly)
+      cleanBase64 = imageData;
+    }
+
+    // Always return both b64_json and url so clients can use whichever they prefer.
+    // Cloudflare FLUX.2 always returns raw base64, so we always have b64_json available.
+    const imageObject: OpenAiImageObject = {
+      b64_json: cleanBase64,
+      url: `data:image/png;base64,${cleanBase64}`,
+      revised_prompt: prompt
+    };
 
     if (response_format === 'b64_json') {
-      // Return base64-encoded JSON
-      if (imageData.startsWith('data:image')) {
-        imageObject.b64_json = imageData.split(',')[1];
-      } else if (imageData.startsWith('/9j/') || imageData.startsWith('iVBORw0KGgo')) {
-        imageObject.b64_json = imageData;
-      } else {
-        imageObject.b64_json = btoa(imageData);
-      }
+      console.log(`[Image] Returning b64_json (${cleanBase64.length} chars)`);
     } else {
-      // Return as data URL
-      if (imageData.startsWith('data:image')) {
-        imageObject.url = imageData;
-      } else if (imageData.startsWith('/9j/') || imageData.startsWith('iVBORw0KGgo')) {
-        imageObject.url = `data:image/png;base64,${imageData}`;
-      } else {
-        imageObject.url = imageData;
-      }
+      console.log(`[Image] Returning url (data URI, ${cleanBase64.length} base64 chars)`);
     }
 
     // Build OpenAI-compatible response

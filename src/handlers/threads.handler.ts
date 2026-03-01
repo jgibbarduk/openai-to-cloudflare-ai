@@ -19,7 +19,7 @@
  * @module handlers/threads
  */
 
-import { errorResponse, serverError } from '../errors';
+import { errorResponse } from '../errors';
 import type { Env } from '../types';
 
 /**
@@ -44,20 +44,10 @@ import type { Env } from '../types';
  */
 export async function handleThreads(request: Request, env: Env, url: URL): Promise<Response> {
   console.log(`[Threads] Request to ${url.pathname} (not implemented)`);
-
-  try {
-    return errorResponse(
-      "Threads API not yet implemented",
-      501,
-      "not_implemented",
-      "The Threads API requires persistent storage and state management not yet supported by this proxy"
-    );
-  } catch (error) {
-    console.error('[Threads] Unexpected error:', error);
-    return serverError(
-      'Thread operation failed',
-      error instanceof Error ? error.message : 'Unknown error'
-    );
-  }
+  return errorResponse(
+    "Threads API not yet implemented",
+    501,
+    "not_implemented",
+    "The Threads API requires persistent storage and state management not yet supported by this proxy"
+  );
 }
-

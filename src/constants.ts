@@ -25,7 +25,7 @@
  * @example
  * console.log(`Starting proxy v${PROXY_VERSION}`);
  */
-export const PROXY_VERSION = "2.1.0"; // Updated: 2026-02-15 - FIX: Responses API streaming format (created_at field, output array)
+export const PROXY_VERSION = "2.2.8"; // Updated: 2026-03-01 - FIX: Always return both url and b64_json in image responses so Onyx can render images regardless of response_format
 
 /**
  * ============================================================================

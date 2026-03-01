@@ -19,7 +19,7 @@
  * @module handlers/assistants
  */
 
-import { errorResponse, serverError } from '../errors';
+import { errorResponse } from '../errors';
 import type { Env } from '../types';
 
 /**
@@ -44,20 +44,10 @@ import type { Env } from '../types';
  */
 export async function handleAssistants(request: Request, env: Env, url: URL): Promise<Response> {
   console.log(`[Assistants] Request to ${url.pathname} (not implemented)`);
-
-  try {
-    return errorResponse(
-      "Assistants API not yet implemented",
-      501,
-      "not_implemented",
-      "The Assistants API requires persistent storage and state management not yet supported by this proxy"
-    );
-  } catch (error) {
-    console.error('[Assistants] Unexpected error:', error);
-    return serverError(
-      'Assistant operation failed',
-      error instanceof Error ? error.message : 'Unknown error'
-    );
-  }
+  return errorResponse(
+    "Assistants API not yet implemented",
+    501,
+    "not_implemented",
+    "The Assistants API requires persistent storage and state management not yet supported by this proxy"
+  );
 }
-

@@ -31,14 +31,6 @@ export function generateUUID(): string {
   return crypto.randomUUID();
 }
 
-/**
- * Legacy function for generating random IDs using Math.random().
- * @deprecated Use generateUUID() instead for better uniqueness and security.
- * @returns A random hex string
- */
-export function getRandomId(): string {
-  return Math.random().toString(16).substring(2, 15) + Math.random().toString(16).substring(2, 15);
-}
 
 /**
  * ============================================================================
@@ -149,33 +141,6 @@ export function getModelMaxTokens(model: string): number {
   return MODEL_MAX_TOKENS[model] || 4096; // Default to 4096 if not specified
 }
 
-/**
- * Clamp max_tokens to model-specific limits.
- *
- * Ensures that the requested max_tokens value doesn't exceed the
- * maximum supported by the model. This prevents API errors from
- * requesting more tokens than a model can generate.
- *
- * @param maxTokens - Requested max tokens (can be undefined)
- * @param model - The model identifier
- * @returns Clamped max tokens value, or undefined if input was undefined
- *
- * @example
- * clampMaxTokens(10000, '@cf/meta/llama-3.1-8b-instruct');
- * // Returns: 8192 (model limit)
- *
- * clampMaxTokens(100, '@cf/meta/llama-3.1-8b-instruct');
- * // Returns: 100 (within limit)
- *
- * clampMaxTokens(undefined, '@cf/meta/llama-3.1-8b-instruct');
- * // Returns: undefined
- */
-export function clampMaxTokens(maxTokens: number | undefined, model: string): number | undefined {
-  if (!maxTokens) return undefined;
-
-  const modelLimit = getModelMaxTokens(model);
-  return Math.min(maxTokens, modelLimit);
-}
 
 /**
  * ============================================================================
@@ -211,4 +176,90 @@ export function floatArrayToBase64(floatArray: number[]): string {
     binary += String.fromCharCode(uint8Array[i]);
   }
   return btoa(binary);
+}
+
+/**
+ * ============================================================================
+ * CLOUD FLARE / BROWSER SAFE HELPERS
+ * ============================================================================
+ */
+
+/**
+ * Get the byte length of a string input.
+ *
+ * Safely calculates the byte length of a string using TextEncoder,
+ * falling back to string length for compatibility with older environments.
+ *
+ * @param input - The input string
+ * @returns The byte length of the string
+ *
+ * @example
+ * safeByteLength('Hello, world!');
+ * // Returns: 13
+ */
+export function safeByteLength(input: string): number {
+  try {
+    // TextEncoder is available in Cloudflare Workers and modern Node runtimes
+    return new TextEncoder().encode(String(input)).length;
+  } catch (e) {
+    // Fallback: approximate by string length (not accurate for multibyte)
+    return String(input).length;
+  }
+}
+
+/**
+ * Safely stringify a value for logging or inspection.
+ *
+ * Serializes a value to a JSON string, handling circular references,
+ * and common non-serializable types (e.g., ReadableStream, ArrayBuffer).
+ * The output is truncated to a maximum length to prevent excessive output.
+ *
+ * @param value - The value to stringify
+ * @param options - Optional settings
+ * @param options.maxLength - Maximum length of the output string (default: 2000)
+ * @returns The serialized string, or '[Unserializable]' if serialization fails
+ *
+ * @example
+ * safeStringify({ foo: 'bar' });
+ * // Returns: '{"foo":"bar"}'
+ *
+ * safeStringify(ReadableStream.from(['data']));
+ * // Returns: '[ReadableStream]'
+ *
+ * safeStringify(new ArrayBuffer(8));
+ * // Returns: '[ArrayBuffer:8]'
+ *
+ * safeStringify({ circular: {} }, { maxLength: 100 });
+ * // Returns: '{"circular":"[Circular]"}'
+ */
+export function safeStringify(value: any, { maxLength = 2000 } = {}): string {
+  const seen = new WeakSet();
+  try {
+    const s = JSON.stringify(value, function replacer(_key, v) {
+      if (v && typeof v === 'object') {
+        if (seen.has(v)) return '[Circular]';
+        seen.add(v);
+      }
+
+      // Handle common non-serializable types gracefully
+      if (typeof ReadableStream !== 'undefined' && v instanceof ReadableStream) return '[ReadableStream]';
+      if (typeof ArrayBuffer !== 'undefined' && v instanceof ArrayBuffer) return `[ArrayBuffer:${(v as ArrayBuffer).byteLength}]`;
+      if (typeof Uint8Array !== 'undefined' && v instanceof Uint8Array) return `[Uint8Array:${(v as Uint8Array).byteLength}]`;
+      if (typeof v === 'function') return `[Function: ${v.name || 'anonymous'}]`;
+      return v;
+    }, 2);
+
+    if (typeof s === 'string') {
+      if (s.length <= maxLength) return s;
+      return s.slice(0, maxLength) + '...[truncated]';
+    }
+    return String(s);
+  } catch (e) {
+    try {
+      const s = String(value);
+      return s.length <= maxLength ? s : s.slice(0, maxLength) + '...[truncated]';
+    } catch (_) {
+      return '[Unserializable]';
+    }
+  }
 }

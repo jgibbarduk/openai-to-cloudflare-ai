@@ -1,3 +1,5 @@
+import type { ModelType } from './types';
+
 const commonProps = {
 	object: "model",
 	taskName: "Text Generation",
@@ -5,7 +7,7 @@ const commonProps = {
 	inUse: true
 } as const;
 
-export const textGenerationModels: ModelType[] = [{
+export const textGenerationModels = [{
 	...commonProps,
 	id: "@cf/openai/gpt-oss-20b#text-generation",
 	name: "@cf/openai/gpt-oss-20b",
@@ -76,6 +78,15 @@ export const textGenerationModels: ModelType[] = [{
 	object: "model",
 	description: "BAAI general embedding (Base) model that transforms any given text into a 768-dimensional vector.",
 	taskDescription: "<b>Note some tools recognize the embeddings models by their name end the word 'embedding'.</b> Feature extraction models transform raw data into numerical features that can be processed while preserving the information in the original dataset. These models are ideal as part of building vector search applications or Retrieval Augmented Generation workflows with Large Language Models (LLM)."
+}, {
+	...commonProps,
+	id: "@cf/qwen/qwen3-embedding-0.6b#text-embeddings",
+	name: "@cf/qwen/qwen3-embedding-0.6b",
+	taskName: "Text Embeddings",
+	object: "model",
+	description: "Qwen 3 small embedding model (0.6b) optimized for generating compact text embeddings.",
+	// Qwen embedding model entry added to ensure embeddings endpoint recognizes this model
+	taskDescription: "Qwen embedding model for compact/small embeddings suitable for semantic search and retrieval tasks."
 }, {
 	...commonProps,
 	id: "@cf/black-forest-labs/flux-2-klein-9b#text-to-image",

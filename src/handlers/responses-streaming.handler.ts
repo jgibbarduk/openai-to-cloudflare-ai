@@ -72,12 +72,11 @@ export async function handleResponsesApiStreaming(
       const reader = stream.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
-      let hasSeenFirstToken = false;
       let hasSeenFirstOutputItem = false;
       let hasSeenFirstReasoningItem = false;
       let reasoningBuffer = '';
       let contentBuffer = '';
-      let toolCalls: Map<number, { id: string; name: string; arguments: string }> = new Map();
+      const toolCalls: Map<number, { id: string; name: string; arguments: string }> = new Map();
       let messageOutputIndex = 0; // Track the correct output index for message item
 
       // Send response.created event
@@ -285,11 +284,12 @@ export async function handleResponsesApiStreaming(
         role: 'assistant',
         status: 'completed',
         content: [
-          {
-            type: 'output_text',
-            text: contentBuffer || ' '
-          }
-        ]
+            {
+              type: 'output_text',
+              // Use empty string for tool-call-only responses; space fallback only when truly no content
+              text: contentBuffer || (toolCalls.size > 0 ? '' : ' ')
+            }
+          ]
       };
 
       // Add tool_calls array to message item if there are any tool calls
