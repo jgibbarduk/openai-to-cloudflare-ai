@@ -1,10 +1,11 @@
 {
-  "version": "2.2.6",
+  "version": "2.2.8",
   "scripts": {
     "api-key": "bash -c 'API_KEY=sk-proj-$(openssl rand -base64 156 | tr -d \"+/\n=\" | tr \"+/\" \"-_\")-mlt && echo \"API_KEY=${API_KEY}\" | tee -a .env && wrangler secret put API_KEY <<< \"$API_KEY\"'",
     "dev": "wrangler dev --port 3000 --ip 0.0.0.0 --remote src/index.ts",
     "deploy": "wrangler deploy --minify src/index.ts",
-    "test": "jest --config=jest.config.cjs --passWithNoTests --silent"
+    "test": "jest --config=jest.config.cjs --passWithNoTests --silent",
+    "test:integration": "jest --config=jest.integration.config.cjs --passWithNoTests"
   },
   "dependencies": {},
   "devDependencies": {
@@ -15,6 +16,7 @@
     "@types/jest": "^29.5.3",
     "@types/node": "^20.4.2",
     "ts-node": "^10.9.1",
-    "typescript": "^5.3.0"
+    "typescript": "^5.3.0",
+    "dotenv": "^16.0.0"
   }
 }

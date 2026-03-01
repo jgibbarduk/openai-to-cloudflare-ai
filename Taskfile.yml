@@ -23,6 +23,12 @@ tasks:
     cmds:
       - "{{.node}} test"
 
+  test:integration:
+    desc: "Run HTTP integration tests against wrangler dev --remote (requires Cloudflare auth). Depends on install."
+    deps: [ install ]
+    cmds:
+      - "{{.node}} run test:integration"
+
   typecheck:
     desc: "Run TypeScript type checking"
     deps: [install]
