@@ -6,8 +6,8 @@
  * Transforms and validates OpenAI requests for Cloudflare Workers AI compatibility
  */
 
-import { GPT_OSS_MODELS, MODEL_MAX_TOKENS, TOOL_CAPABLE_MODELS } from '../constants';
-import { getCfModelName } from '../model-helpers';
+import { AUTO_ROUTE_MODEL_NAMES, GPT_OSS_MODELS, MODEL_MAX_TOKENS, TOOL_CAPABLE_MODELS } from '../constants';
+import { getCfModelName, resolveAutoRouteModel } from '../model-helpers';
 import { mapTemperatureToCloudflare, mapTools, safeByteLength, safeStringify } from '../utils';
 import type { OpenAiChatCompletionReq, Env, AiChatRequestParts, AiBaseInputOptions, AiMessagesInputOptions } from '../types';
 
@@ -223,6 +223,14 @@ export function validateAndNormalizeRequest(data: OpenAiChatCompletionReq, env: 
  * Transform OpenAI Chat Completion request to Cloudflare Workers AI format
  */
 export function transformChatCompletionRequest(request: OpenAiChatCompletionReq, env: Env): AiChatRequestParts {
+  // Auto-routing: when the client requests 'auto' or 'auto/route', select the
+  // best Cloudflare model based on the request's tools, context size, etc.
+  if (request.model && AUTO_ROUTE_MODEL_NAMES.includes(request.model.trim())) {
+    const routedModel = resolveAutoRouteModel(request, env);
+    console.log(`[Transform] Auto-route: resolved '${request.model}' → '${routedModel}'`);
+    request = { ...request, model: routedModel };
+  }
+
   // Base options common to both prompt and messages formats
   const requestedMaxTokens = request.max_completion_tokens ?? request.max_tokens ?? 16384;
 

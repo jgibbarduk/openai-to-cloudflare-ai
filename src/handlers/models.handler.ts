@@ -81,9 +81,15 @@ export async function handleListModels(env: Env): Promise<Response> {
       object: "model" as const
     }));
 
+    // Prepend the virtual auto-route models so clients can discover them
+    const autoRouteModels: OpenAIModelListItem[] = [
+      { id: 'auto',       object: 'model' },
+      { id: 'auto/route', object: 'model' },
+    ];
+
     const response: OpenAIModelListResponse = {
       object: "list",
-      data: openaiModels
+      data: [...autoRouteModels, ...openaiModels]
     };
 
     const duration = Date.now() - startTime;
