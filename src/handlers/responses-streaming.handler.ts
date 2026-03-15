@@ -55,7 +55,6 @@ export async function handleResponsesApiStreaming(
   stream: ReadableStream,
   model: string
 ): Promise<Response> {
-  console.log('[Responses] Processing Responses API streaming');
 
   const { readable, writable } = new TransformStream();
   const writer = writable.getWriter();
@@ -347,7 +346,6 @@ export async function handleResponsesApiStreaming(
       await writer.write(encoder.encode('event: done\ndata: [DONE]\n\n'));
       await writer.close();
 
-      console.log('[Responses] Streaming completed successfully');
 
     } catch (error) {
       console.error('[Responses] Streaming error:', error);

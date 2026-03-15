@@ -90,8 +90,6 @@ function createDefaultUsage(): UsageStats {
  */
 export function extractGptOssResponse(res: any): AiJsonResponse {
   try {
-    console.log("[GPT-OSS] Parsing response, keys:", Object.keys(res).join(', '));
-
     // Validate output array exists
     if (!res.output || !Array.isArray(res.output)) {
       console.warn("[GPT-OSS] No output array found in response");
@@ -101,8 +99,6 @@ export function extractGptOssResponse(res: any): AiJsonResponse {
         usage: createDefaultUsage()
       };
     }
-
-    console.log(`[GPT-OSS] Processing ${res.output.length} output items`);
 
     // Extract text from message type items (preferred)
     let responseText = "";
@@ -117,11 +113,8 @@ export function extractGptOssResponse(res: any): AiJsonResponse {
       }
     }
 
-    console.log(`[GPT-OSS] Extracted ${responseText.length} chars from message items`);
-
     // Fallback: extract from reasoning type if no message found
     if (!responseText) {
-      console.log("[GPT-OSS] No message content, falling back to reasoning");
       for (const item of res.output) {
         if (item.type === "reasoning" && item.content && Array.isArray(item.content)) {
           for (const contentItem of item.content) {
@@ -129,7 +122,7 @@ export function extractGptOssResponse(res: any): AiJsonResponse {
               responseText += contentItem.text;
             }
           }
-          if (responseText) break; // Use first reasoning item with content
+          if (responseText) break;
         }
       }
     }
@@ -141,8 +134,6 @@ export function extractGptOssResponse(res: any): AiJsonResponse {
       total_tokens: 0
     };
     usage.total_tokens = usage.prompt_tokens + usage.completion_tokens;
-
-    console.log(`[GPT-OSS] Parsed response: ${responseText.length} chars, usage:`, usage);
 
     return {
       response: ensureValidResponseText(responseText, "GPT-OSS"),
@@ -188,8 +179,6 @@ export function extractGptOssResponse(res: any): AiJsonResponse {
  * // Returns: { response: "42", ... }
  */
 export function sanitizeAiResponse(res: any): AiJsonResponse {
-  console.log("[Sanitize] Validating response structure");
-
   // Ensure response field exists and is valid
   let response = res.response;
 
@@ -217,7 +206,6 @@ export function sanitizeAiResponse(res: any): AiJsonResponse {
       console.warn("[Sanitize] tool_calls is not an array, removing");
       toolCalls = undefined;
     } else if (toolCalls.length === 0) {
-      console.log("[Sanitize] tool_calls array is empty, removing");
       toolCalls = undefined;
     }
   }
@@ -271,8 +259,6 @@ export function sanitizeAiResponse(res: any): AiJsonResponse {
  */
 export function extractOpenAiCompatibleResponse(res: any, model: string): AiJsonResponse {
   try {
-    console.log("[OpenAI-Compat] Parsing response, has choices:", !!res.choices);
-
     // Validate response structure
     if (!res.choices || !Array.isArray(res.choices) || res.choices.length === 0) {
       console.warn("[OpenAI-Compat] Invalid or empty choices array");
@@ -299,19 +285,15 @@ export function extractOpenAiCompatibleResponse(res: any, model: string): AiJson
     let reasoningContent = "";
     if (message.reasoning_content && typeof message.reasoning_content === 'string') {
       reasoningContent = message.reasoning_content;
-      console.log(`[OpenAI-Compat] Found reasoning_content: ${reasoningContent.length} chars`);
     }
 
     // Extract main content (final answer)
     let responseText = "";
     if (message.content && typeof message.content === 'string') {
       responseText = message.content;
-      console.log(`[OpenAI-Compat] Found content: ${responseText.length} chars`);
     }
     // Handle tool calls (no regular content when tools are called)
     else if (message.tool_calls && Array.isArray(message.tool_calls) && message.tool_calls.length > 0) {
-      console.log(`[OpenAI-Compat] Found ${message.tool_calls.length} tool call(s), no content`);
-
       // Transform to Cloudflare format
       const toolCalls = message.tool_calls.map((tc: any) => ({
         name: tc.function?.name || tc.name,
@@ -324,7 +306,7 @@ export function extractOpenAiCompatibleResponse(res: any, model: string): AiJson
       }));
 
       return {
-        response: "", // Empty for tool calls
+        response: "",
         contentType: "application/json",
         usage: res.usage || createDefaultUsage(),
         tool_calls: toolCalls,
@@ -342,24 +324,14 @@ export function extractOpenAiCompatibleResponse(res: any, model: string): AiJson
 
     // Estimate usage if missing or all zeros
     if (usage.prompt_tokens === 0 && usage.completion_tokens === 0) {
-      const contentLength = isReasoningModel
-        ? responseText.length + reasoningContent.length
-        : responseText.length;
-
-      usage.prompt_tokens = 10; // Minimum estimate
+      usage.prompt_tokens = 10;
       usage.completion_tokens = estimateTokens(responseText + reasoningContent);
       usage.total_tokens = usage.prompt_tokens + usage.completion_tokens;
-
-      console.log(
-        `[OpenAI-Compat] Estimated usage for ${isReasoningModel ? 'reasoning' : 'standard'} model:`,
-        usage
-      );
     }
     // Adjust usage for non-reasoning models with reasoning content
     else if (!isReasoningModel && reasoningContent) {
       usage.completion_tokens = estimateTokens(responseText);
       usage.total_tokens = usage.prompt_tokens + usage.completion_tokens;
-      console.log(`[OpenAI-Compat] Adjusted usage for non-reasoning model (stripped reasoning)`);
     }
 
     return {

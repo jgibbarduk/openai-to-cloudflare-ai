@@ -75,7 +75,6 @@ export async function listAIModels(_env?: Env): Promise<ModelType[]> {
 export function getCfModelName(modelName: string | undefined, env: Env): string {
   // Handle empty or missing model name
   if (!modelName || modelName.trim() === '') {
-    console.log(`[Model] No model specified, using default: ${env.DEFAULT_AI_MODEL}`);
     return env.DEFAULT_AI_MODEL || FALLBACK_MODEL;
   }
 
@@ -85,9 +84,7 @@ export function getCfModelName(modelName: string | undefined, env: Env): string 
   // return the cheap-tier default here.  The proper routing happens earlier in
   // transformChatCompletionRequest via resolveAutoRouteModel().
   if (AUTO_ROUTE_MODEL_NAMES.includes(trimmedName)) {
-    const cheapModel = pickFromPool(env.AUTO_ROUTE_CHEAP_MODELS, AUTO_ROUTE_DEFAULTS.cheap);
-    console.log(`[Model] Auto-route model "${trimmedName}" (no request context) → cheap fallback: ${cheapModel}`);
-    return cheapModel;
+    return pickFromPool(env.AUTO_ROUTE_CHEAP_MODELS, AUTO_ROUTE_DEFAULTS.cheap);
   }
 
   // Check if it's an OpenAI alias (gpt-4, gpt-3.5-turbo, etc.)
@@ -99,7 +96,6 @@ export function getCfModelName(modelName: string | undefined, env: Env): string 
 
   // Check if it's already a Cloudflare model identifier
   if (trimmedName.startsWith('@cf/') || trimmedName.startsWith('@hf/')) {
-    console.log(`[Model] Using Cloudflare model: ${trimmedName}`);
     return trimmedName;
   }
 

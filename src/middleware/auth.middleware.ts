@@ -58,31 +58,6 @@ export function authenticateRequest(request: Request, env: Env, pathname: string
   const authHeader = request.headers.get('Authorization');
   const providedKey = authHeader?.startsWith('Bearer ') ? authHeader.split(' ')[1] : null;
 
-  // Debug logging for authentication
-  console.log(`[Auth] Request to ${pathname} from ${request.headers.get('User-Agent') || 'unknown'}`);
-  console.log(`[Auth] Authorization header present: ${!!authHeader}`);
-  console.log(`[Auth] API_KEY configured: ${!!env.API_KEY}`);
-
-  // Log headers for debugging (mask sensitive data)
-  const allHeaders: Record<string, string> = {};
-  request.headers.forEach((value, key) => {
-    if (key.toLowerCase().includes('auth') ||
-        key.toLowerCase().includes('key') ||
-        key.toLowerCase().includes('token')) {
-      allHeaders[key] = value.substring(0, 15) + '...';
-    } else {
-      allHeaders[key] = value;
-    }
-  });
-  console.log(`[Auth] Headers:`, JSON.stringify(allHeaders));
-
-  if (authHeader && providedKey) {
-    console.log(`[Auth] Provided key (first 8 chars): ${providedKey.substring(0, 8)}...`);
-  }
-  if (env.API_KEY) {
-    console.log(`[Auth] Expected key (first 8 chars): ${env.API_KEY.substring(0, 8)}...`);
-  }
-
   // If API_KEY is not configured or is default, allow all requests
   if (!env.API_KEY || env.API_KEY === 'your-api-key-here') {
     console.warn(`[Auth] WARNING: API_KEY not configured. All requests are allowed.`);
@@ -93,7 +68,6 @@ export function authenticateRequest(request: Request, env: Env, pathname: string
   if (providedKey !== env.API_KEY) {
     // Allow unauthenticated access to /models/search for debugging
     if (pathname === '/models/search') {
-      console.log(`[Auth] Allowing unauthenticated access to ${pathname} for debugging`);
       return { success: true };
     }
 
@@ -104,7 +78,6 @@ export function authenticateRequest(request: Request, env: Env, pathname: string
     };
   }
 
-  console.log(`[Auth] Authentication successful`);
   return { success: true };
 }
 

@@ -27,8 +27,6 @@ const MAX_MAPPED_TOOLS = 64; // Limit mapped tools to avoid huge tool lists (rai
  * - Parameter clamping
  */
 export function validateAndNormalizeRequest(data: OpenAiChatCompletionReq, env: Env): OpenAiChatCompletionReq {
-  console.log("[Validation] Normalizing request for Onyx compatibility");
-
   // Step 0: Handle Onyx's non-standard 'input' field
   // Onyx sometimes sends {"input": [...]} instead of {"messages": [...]}
   if (!data.messages && (data as any).input) {
@@ -36,7 +34,6 @@ export function validateAndNormalizeRequest(data: OpenAiChatCompletionReq, env: 
 
     // Handle simple string input
     if (typeof input === 'string') {
-      console.log("[Validation] Input is a simple string, converting to user message");
       data.messages = [{
         role: "user",
         content: input
@@ -71,7 +68,6 @@ export function validateAndNormalizeRequest(data: OpenAiChatCompletionReq, env: 
         return item;
       });
 
-      console.log(`[Validation] Converted ${data.messages.length} input items to messages`);
     }
 
     // Remove the non-standard 'input' field
@@ -85,16 +81,6 @@ export function validateAndNormalizeRequest(data: OpenAiChatCompletionReq, env: 
   }
 
   // Step 2: Validate and sanitize every message
-  // Debug: log a summary of each incoming message so we can see what Onyx sends
-  data.messages.forEach((msg: any, i: number) => {
-    const contentPreview = typeof msg.content === 'string'
-      ? msg.content.slice(0, 200)
-      : JSON.stringify(msg.content)?.slice(0, 200);
-    const toolCallsPreview = msg.tool_calls ? ` tool_calls=${JSON.stringify(msg.tool_calls).slice(0, 200)}` : '';
-    const toolCallIdPreview = msg.tool_call_id ? ` tool_call_id=${msg.tool_call_id}` : '';
-    console.log(`[Validation][MSG ${i}] role=${msg.role}${toolCallIdPreview}${toolCallsPreview} content=${contentPreview}`);
-  });
-
   data.messages = data.messages.map((msg: any) => {
     // Ensure message has a valid role
     let role = msg.role || "user";
@@ -102,24 +88,20 @@ export function validateAndNormalizeRequest(data: OpenAiChatCompletionReq, env: 
     // Map unsupported roles to supported ones
     if (role === "developer") {
       role = "system";
-      console.log("[Validation] Mapping 'developer' role to 'system'");
     } else if (role === "tool") {
       // Keep 'tool' role as-is (for tool results)
     } else if (!["system", "user", "assistant"].includes(role)) {
       role = "user";
-      console.log(`[Validation] Mapping unknown role '${msg.role}' to 'user'`);
     }
 
     // Step 3: Ensure content is never null or undefined
     let content = msg.content;
     if (content === null || content === undefined) {
-      console.log(`[Validation] Message with role '${role}' had null content, replacing with empty string`);
       content = "";
     }
 
     // Ensure content is a string
     if (typeof content !== "string") {
-      console.log(`[Validation] Message content is ${typeof content}, converting to string`);
 
       // Handle array of content parts (Responses API format)
       if (typeof content !== "string" && Array.isArray(content)) {
@@ -160,14 +142,11 @@ export function validateAndNormalizeRequest(data: OpenAiChatCompletionReq, env: 
             if (item?.revised_prompt) revisedPrompt = item.revised_prompt;
             else if (item?.data?.[0]?.revised_prompt) revisedPrompt = item.data[0].revised_prompt;
           } catch { /* not valid JSON */ }
-          console.log(`[Validation] Tool message is stringified image result, replacing with success summary`);
           content = `Image generation succeeded. Revised prompt: "${revisedPrompt}". The image has been displayed to the user.`;
         } else if (content.length > MAX_MESSAGE_CHARS) {
-          console.log(`[Validation] Truncating tool message content from ${content.length} to ${MAX_MESSAGE_CHARS} chars`);
           content = content.slice(0, MAX_MESSAGE_CHARS);
         }
       } else if (content.length > MAX_MESSAGE_CHARS) {
-        console.log(`[Validation] Truncating message content from ${content.length} to ${MAX_MESSAGE_CHARS} chars`);
         content = content.slice(0, MAX_MESSAGE_CHARS);
       }
     }
@@ -184,7 +163,7 @@ export function validateAndNormalizeRequest(data: OpenAiChatCompletionReq, env: 
 
   // Enforce maximum number of messages by trimming oldest messages if needed
   if (data.messages.length > MAX_MESSAGES) {
-    console.log(`[Validation] Trimming messages from ${data.messages.length} to ${MAX_MESSAGES}`);
+    console.warn(`[Validation] Trimming messages from ${data.messages.length} to ${MAX_MESSAGES}`);
     // Keep the latest messages (assume end of array is most recent)
     data.messages = data.messages.slice(-MAX_MESSAGES);
   }
@@ -203,7 +182,6 @@ export function validateAndNormalizeRequest(data: OpenAiChatCompletionReq, env: 
 
   for (const field of unsupportedFields) {
     if (field in data) {
-      console.log(`[Validation] Stripping unsupported field: ${field}`);
       delete (data as any)[field];
     }
   }
@@ -211,10 +189,7 @@ export function validateAndNormalizeRequest(data: OpenAiChatCompletionReq, env: 
   // Step 5: Apply defaults if not specified
   if (data.temperature === undefined || data.temperature === null) {
     data.temperature = 0.7;
-    console.log("[Validation] Applied default temperature: 0.7");
   }
-
-  console.log("[Validation] Final message count:", data.messages.length);
 
   return data;
 }
@@ -227,7 +202,6 @@ export function transformChatCompletionRequest(request: OpenAiChatCompletionReq,
   // best Cloudflare model based on the request's tools, context size, etc.
   if (request.model && AUTO_ROUTE_MODEL_NAMES.includes(request.model.trim())) {
     const routedModel = resolveAutoRouteModel(request, env);
-    console.log(`[Transform] Auto-route: resolved '${request.model}' → '${routedModel}'`);
     request = { ...request, model: routedModel };
   }
 
@@ -251,7 +225,7 @@ export function transformChatCompletionRequest(request: OpenAiChatCompletionReq,
   );
 
   if (maxTokens !== requestedMaxTokens) {
-    console.log(`[Transform] Adjusted max_tokens from ${requestedMaxTokens} to ${maxTokens} (model ${resolvedModel} has limit: ${modelMaxTokensLimit})`);
+    console.warn(`[Transform] max_tokens adjusted ${requestedMaxTokens} → ${maxTokens} (${resolvedModel} limit: ${modelMaxTokensLimit})`);
   }
 
   const baseOptions: AiBaseInputOptions = {
@@ -265,8 +239,6 @@ export function transformChatCompletionRequest(request: OpenAiChatCompletionReq,
     presence_penalty: request.presence_penalty ?? undefined
   };
 
-  console.log(`[Transform] max_tokens: ${baseOptions.max_tokens} (from request: ${request.max_tokens || request.max_completion_tokens || 'not specified'})`);
-
   // Get tool capability status (resolvedModel already declared above)
   const isGptOss = GPT_OSS_MODELS.some(m => resolvedModel.includes(m) || m.includes(resolvedModel));
   const isLlama = resolvedModel.includes('llama');
@@ -274,8 +246,7 @@ export function transformChatCompletionRequest(request: OpenAiChatCompletionReq,
   // ✅ FIX 3: Auto-route GPT-OSS to Qwen when tools are requested
   // GPT-OSS does NOT support tools on Cloudflare Workers AI (platform limitation)
   if (isGptOss && request.tools && request.tools.length > 0) {
-    console.warn(`[GPT-OSS] Tools requested → auto-switching to Qwen for tool support`);
-    console.log(`[GPT-OSS] Routing to @cf/qwen/qwen3-30b-a3b-fp8 (supports tools)`);
+    console.warn(`[Transform] ${resolvedModel} → @cf/qwen/qwen3-30b-a3b-fp8 (GPT-OSS does not support tools)`);
     resolvedModel = '@cf/qwen/qwen3-30b-a3b-fp8';
     // Continue with Qwen processing (fall through to standard messages path)
   }
@@ -286,8 +257,7 @@ export function transformChatCompletionRequest(request: OpenAiChatCompletionReq,
   // Auto-switch Llama to Qwen when tools are requested
   // Llama models output tool calls as plain text JSON instead of structured tool_calls
   if (isLlama && request.tools && request.tools.length > 0) {
-    console.warn(`[Llama] Tools requested but Llama outputs tool calls as plain text JSON`);
-    console.log(`[Llama] Auto-switching to @cf/qwen/qwen3-30b-a3b-fp8 for proper tool support`);
+    console.warn(`[Transform] ${resolvedModel} → @cf/qwen/qwen3-30b-a3b-fp8 (Llama tool calls are plain-text JSON, not structured)`);
     resolvedModel = '@cf/qwen/qwen3-30b-a3b-fp8';
     // Fall through to use standard messages transformation with Qwen
   }
@@ -297,33 +267,18 @@ export function transformChatCompletionRequest(request: OpenAiChatCompletionReq,
   // GPT-OSS never supports tools, even if in TOOL_CAPABLE_MODELS by mistake
   const supportsTools = !finalIsGptOss && TOOL_CAPABLE_MODELS.some(m => resolvedModel.includes(m) || m.includes(resolvedModel));
 
-  // Log tool support status
-  if (request.tools && request.tools.length > 0) {
-    console.log(`[Transform] Request includes ${request.tools.length} tools`);
-    console.log(`[Transform] Model ${resolvedModel} supports tools: ${supportsTools}`);
-  }
-
   // Map tools AFTER model switching and support check
   // Limit tools to a reasonable cap to avoid huge payloads
   const toolsToMap = (request.tools && Array.isArray(request.tools)) ? request.tools.slice(0, MAX_MAPPED_TOOLS) : undefined;
   const mappedTools = supportsTools && toolsToMap ? mapTools(toolsToMap) : undefined;
 
-  if (mappedTools) {
-    console.log(`[Transform] Mapped ${mappedTools.length} tools for ${resolvedModel} (capped to ${MAX_MAPPED_TOOLS})`);
-  } else if (request.tools && request.tools.length > 0) {
-    console.log(`[Transform] Tools present but not mapped (supportsTools=${supportsTools}) or mapped count is zero`);
-  }
-
   // GPT-OSS models - use standard messages format (NOT Harmony instructions/input)
   // Cloudflare Workers AI requires: prompt, messages, or requests
   if (finalIsGptOss) {
-    console.log(`[Transform] GPT-OSS model detected: ${resolvedModel}`);
-    console.log(`[GPT-OSS] Using standard messages format (CF AI requirement)`);
-
     // ⚠️  CRITICAL: Disable streaming for GPT-OSS
     // GPT-OSS streaming can be unreliable
     if (baseOptions.stream) {
-      console.log(`[GPT-OSS] DISABLED streaming for GPT-OSS (stability)`);
+      console.warn(`[Transform] Streaming disabled for GPT-OSS model ${resolvedModel}`);
       baseOptions.stream = false;
     }
 
@@ -343,7 +298,6 @@ export function transformChatCompletionRequest(request: OpenAiChatCompletionReq,
       temperature: baseOptions.temperature ? Math.min(baseOptions.temperature, 1.0) : 0.7,
     };
 
-    console.log(`[GPT-OSS] Messages count:`, transformedMessages.length);
 
     return {
       model: resolvedModel,

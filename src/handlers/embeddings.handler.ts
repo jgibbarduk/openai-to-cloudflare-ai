@@ -53,7 +53,6 @@ import type { Env, OpenAiEmbeddingReq, OpenAiEmbeddingObject, OpenAiEmbeddingRes
  */
 export async function handleEmbeddings(request: Request, env: Env): Promise<Response> {
   const startTime = Date.now();
-  console.log('[Embeddings] Processing embedding request...');
 
   try {
     // Parse request body
@@ -71,7 +70,6 @@ export async function handleEmbeddings(request: Request, env: Env): Promise<Resp
 
     // Resolve model name (e.g., text-embedding-ada-002 -> @cf/baai/bge-base-en-v1.5)
     const model = getCfModelName(requestedModel, env);
-    console.log(`[Embeddings] Using model: ${model} (requested: ${requestedModel})`);
 
     // Validate model is an embedding model
     const models = await listAIModels(env);
@@ -98,7 +96,6 @@ export async function handleEmbeddings(request: Request, env: Env): Promise<Resp
       return validationError('All input values must be non-empty strings', 'input');
     }
 
-    console.log(`[Embeddings] Generating embeddings for ${texts.length} text(s)`);
 
     // Create Cloudflare AI options
     const options: AiEmbeddingInputOptions = { text: texts };

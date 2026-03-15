@@ -13,9 +13,9 @@ DEFAULT_AI_MODEL = "@cf/meta/llama-3-8b-instruct"
 # Optional: override models used by the auto/route intelligent routing feature.
 # When a client requests model "auto" or "auto/route", the proxy picks the tier
 # below that best matches the request's tools and context size.
-# AUTO_ROUTE_CHEAP_MODELS    = "@cf/meta/llama-3-8b-instruct"    # no tools, small context
-# AUTO_ROUTE_TOOL_MODELS     = "@cf/qwen/qwen3-30b-a3b-fp8"      # tools present, moderate context
-# AUTO_ROUTE_ADVANCED_MODELS = "@cf/zai-org/glm-4.7-flash"       # large context or many tools
+AUTO_ROUTE_CHEAP_MODELS    = "@cf/meta/llama-3-8b-instruct"    # no tools, small context
+AUTO_ROUTE_TOOL_MODELS     = "@cf/qwen/qwen3-30b-a3b-fp8"      # tools present, moderate context
+AUTO_ROUTE_ADVANCED_MODELS = "@cf/zai-org/glm-4.7-flash"       # large context or many tools
 
 [[kv_namespaces]]
 binding = "CACHE"

@@ -59,7 +59,6 @@ const STATUS_COMPLETED = "completed";
  */
 function ensureValidContent(content: string | null | undefined): string {
   if (!content || content.trim().length === 0) {
-    console.log("[Builder] Empty content detected, using fallback space character");
     return EMPTY_CONTENT_FALLBACK;
   }
   return content;
@@ -73,7 +72,6 @@ function transformToolCalls(toolCalls?: any[]): any[] | undefined {
     return undefined;
   }
 
-  console.log("[Builder] Transforming tool_calls to OpenAI format");
   return toolCalls.map((tc) => ({
     id: `call_${generateUUID()}`,
     type: TYPE_FUNCTION,
@@ -141,7 +139,7 @@ export function buildOpenAIChatResponse(
   const shouldIncludeReasoning = isReasoningModel(model) && reasoningContent;
 
   if (reasoningContent && !isReasoningModel(model)) {
-    console.log(`[Builder] Stripping reasoning_content - ${model} is not a reasoning model`);
+    // Strip reasoning_content silently for non-reasoning models
   }
 
   // Build canonical OpenAI response
@@ -169,13 +167,6 @@ export function buildOpenAIChatResponse(
     system_fingerprint: `fp_${generateUUID()}`
   };
 
-  console.log(
-    `[Builder] Built Chat Completion response for ${model}: ` +
-    `content_length=${finalContent?.length || 0}, ` +
-    `tool_calls=${openaiToolCalls?.length || 0}, ` +
-    `finish_reason=${response.choices[0].finish_reason}, ` +
-    `usage=${JSON.stringify(usage)}`
-  );
 
   return response;
 }
@@ -342,15 +333,6 @@ export function buildOpenAIResponsesFormat(
     metadata: {}
   };
 
-  console.log(
-    `[Builder] Built Responses API format for ${model}: ` +
-    `content_length=${messageContent?.length || 0}, ` +
-    `tool_calls=${toolCalls?.length || 0}, ` +
-    `reasoning=${!!reasoningContent}, ` +
-    `temperature=${response.temperature}, ` +
-    `top_p=${response.top_p}, ` +
-    `usage=${JSON.stringify(usage)}`
-  );
 
   return response;
 }

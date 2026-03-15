@@ -106,7 +106,6 @@ export async function handleStreamingResponse(
   stream: ReadableStream,
   model: string
 ): Promise<Response> {
-  console.log('[Chat] Processing streaming response');
 
   const { readable, writable } = new TransformStream();
   const writer = writable.getWriter();
@@ -299,7 +298,6 @@ export async function handleStreamingResponse(
       await writer.write(encoder.encode('data: [DONE]\n\n'));
       await writer.close();
 
-      console.log('[Chat] Streaming completed successfully');
 
     } catch (error) {
       console.error('[Chat] Streaming error:', error);
@@ -345,7 +343,6 @@ export async function handleStreamingResponse(
  */
 export async function handleChatCompletions(request: Request, env: Env): Promise<Response> {
   const startTime = Date.now();
-  console.log('[Chat] Processing chat completion request');
 
   try {
     // Parse request body
@@ -416,26 +413,13 @@ export async function handleChatCompletions(request: Request, env: Env): Promise
       console.warn('[Chat] Could not verify model type before chat call:', e);
     }
 
-    console.log(`[Chat] Model: ${model}, Stream: ${options?.stream}, Messages: ${(options as any)?.messages?.length || 0}`);
-
-    // Log detailed transformed request payload (size + preview)
-    try {
-      const outgoing = safeStringify({ model, options });
-      const outBytes = safeByteLength(outgoing);
-      const head = outgoing.slice(0, 2000);
-      const tail = outgoing.length > 2000 ? outgoing.slice(-200) : '';
-      console.log(`[Chat][OUTGOING] Transformed request size: ${outBytes} bytes`);
-      console.log(`[Chat][OUTGOING] Preview (head): ${head}${tail ? '...[truncated]...'+tail : ''}`);
-    } catch (e) {
-      console.warn('[Chat][OUTGOING] Failed to stringify outgoing payload for logging:', e);
-    }
+    console.log(`[Chat] ${model} stream=${options?.stream} msgs=${(options as any)?.messages?.length || 0}`);
 
     // Call Cloudflare AI (with provider response logging)
     let aiRes: any;
     try {
       aiRes = await env.AI.run(model, options);
     } catch (err: any) {
-      // Log provider error body if available
       console.error('[Chat][PROVIDER] Call threw an exception:', err && err.message ? err.message : err);
       if (err && err.response) {
         try {
@@ -453,32 +437,17 @@ export async function handleChatCompletions(request: Request, env: Env): Promise
       throw err;
     }
 
-    // Log provider response preview for non-streaming cases
+    // Log provider errors only
     try {
-      if (aiRes instanceof ReadableStream) {
-        console.log('[Chat][PROVIDER] Received streaming response (ReadableStream) from provider');
-      } else if (typeof aiRes === 'object' && aiRes !== null) {
-        // Stringify with size guard
-        const respText = safeStringify(aiRes, { maxLength: 200000 });
-        const respBytes = safeByteLength(respText);
-        const head = respText.slice(0, 2000);
-        const tail = respText.length > 2000 ? respText.slice(-200) : '';
-        console.log(`[Chat][PROVIDER] Received response size: ${respBytes} bytes`);
-        console.log(`[Chat][PROVIDER] Response preview (head): ${head}${tail ? '...<truncated>...' + tail : ''}`);
-
-        // If provider included an `error` field, log it explicitly
-        if ('error' in aiRes) {
-          try {
-            console.error('[Chat][PROVIDER] Provider returned error object:', safeStringify((aiRes as any).error).slice(0, 2000));
-          } catch (e) {
-            console.error('[Chat][PROVIDER] Provider returned error (unable to stringify)');
-          }
+      if (typeof aiRes === 'object' && aiRes !== null && 'error' in aiRes) {
+        try {
+          console.error('[Chat][PROVIDER] Provider returned error object:', safeStringify((aiRes as any).error).slice(0, 2000));
+        } catch (e) {
+          console.error('[Chat][PROVIDER] Provider returned error (unable to stringify)');
         }
-      } else {
-        console.log('[Chat][PROVIDER] Provider returned non-object response:', String(aiRes).slice(0, 2000));
       }
     } catch (e) {
-      console.warn('[Chat][PROVIDER] Failed to log provider response preview:', e);
+      // ignore logging failures
     }
 
     // Handle streaming response

@@ -48,12 +48,9 @@ function parseInputItems(inputItems: any[]): any[] {
 
 export async function handleResponses(request: Request, env: Env): Promise<Response> {
   const startTime = Date.now();
-  console.log('[Responses] Processing Responses API request');
 
   try {
     const data = await request.json() as any;
-
-    console.log('[Responses] Request keys:', Object.keys(data).join(', '));
 
     const requestedModel = data.model || data.model_id;
     if (!requestedModel) {
@@ -63,13 +60,10 @@ export async function handleResponses(request: Request, env: Env): Promise<Respo
     let messages: any[] = [];
 
     if (data.input_items && Array.isArray(data.input_items)) {
-      console.log(`[Responses] Parsing ${data.input_items.length} input_items`);
       messages = parseInputItems(data.input_items);
     } else if (data.messages && Array.isArray(data.messages)) {
-      console.log(`[Responses] Using ${data.messages.length} messages directly`);
       messages = data.messages;
     } else if (data.input) {
-      console.log('[Responses] Using direct input field');
       if (typeof data.input === 'string') {
         messages = [{ role: 'user', content: data.input }];
       } else if (Array.isArray(data.input)) {
@@ -93,12 +87,11 @@ export async function handleResponses(request: Request, env: Env): Promise<Respo
     const validatedData = validateAndNormalizeRequest(openaiRequest, env);
     const { model, options } = transformChatCompletionRequest(validatedData, env);
 
-    console.log(`[Responses] Model: ${model}, Stream: ${options?.stream}`);
+    console.log(`[Responses] ${model} stream=${options?.stream}`);
 
     const aiRes = await env.AI.run(model, options);
 
     if (options.stream && aiRes instanceof ReadableStream) {
-      console.log('[Responses] Returning Responses API streaming response');
       return handleResponsesApiStreaming(aiRes, requestedModel);
     }
 

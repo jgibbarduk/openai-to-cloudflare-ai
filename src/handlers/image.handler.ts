@@ -119,7 +119,6 @@ async function streamToBase64(stream: ReadableStream): Promise<string> {
  */
 export async function handleImageGeneration(request: Request, env: Env): Promise<Response> {
   const startTime = Date.now();
-  console.log('[Image] Processing image generation request...');
 
   try {
     // Parse request body
@@ -137,7 +136,7 @@ export async function handleImageGeneration(request: Request, env: Env): Promise
 
     // Resolve model name (e.g., dall-e-3 -> @cf/black-forest-labs/flux-2-klein-9b)
     const model = getCfModelName(requestedModel, env);
-    console.log(`[Image] Using model: ${model} (requested: ${requestedModel})`);
+    console.log(`[Image] ${model} prompt=${prompt.length}chars`);
 
     // Validate it's an image generation model
     if (!isImageGenerationModel(model, requestedModel)) {
@@ -156,11 +155,8 @@ export async function handleImageGeneration(request: Request, env: Env): Promise
       if (dimensions) {
         imageInput.width = dimensions.width;
         imageInput.height = dimensions.height;
-        console.log(`[Image] Size: ${dimensions.width}x${dimensions.height}`);
       }
     }
-
-    console.log(`[Image] Generating image with prompt (${prompt.length} chars)`);
 
     // FLUX.2 models require a specific multipart input format via the Workers AI binding.
     // FormData must be serialized through a Response to get the body stream + content-type
@@ -175,14 +171,12 @@ export async function handleImageGeneration(request: Request, env: Env): Promise
       const formStream = formResponse.body;
       const formContentType = formResponse.headers.get('content-type')!;
       aiInput = { multipart: { body: formStream, contentType: formContentType } };
-      console.log(`[Image] Using multipart input for ${model}`);
     }
 
     // Call Cloudflare Workers AI
     let aiRes;
     try {
       aiRes = await env.AI.run(model as any, aiInput);
-      console.log(`[Image] Generation complete, response type: ${typeof aiRes}`);
     } catch (error: any) {
       const errorMsg = error?.message || String(error);
       console.error(`[Image] AI generation failed:`, errorMsg);
@@ -235,17 +229,13 @@ export async function handleImageGeneration(request: Request, env: Env): Promise
     let imageData: string = '';
 
     if (aiRes instanceof ReadableStream) {
-      console.log('[Image] Processing streaming response...');
       imageData = await streamToBase64(aiRes);
-      console.log(`[Image] Converted stream to base64 (${imageData.length} chars)`);
     }
     else if (aiRes instanceof Uint8Array || aiRes instanceof ArrayBuffer) {
       imageData = binaryToBase64(aiRes);
-      console.log(`[Image] Converted binary to base64 (${imageData.length} chars)`);
     }
     else if (typeof aiRes === 'string') {
       imageData = aiRes;
-      console.log(`[Image] String response (${imageData.length} chars)`);
     }
     else if (typeof aiRes === 'object' && aiRes !== null) {
       // Check various possible response formats
@@ -275,8 +265,6 @@ export async function handleImageGeneration(request: Request, env: Env): Promise
       return serverError('Failed to generate image', 'No image data returned from AI');
     }
 
-    console.log(`[Image] Final image data: ${imageData.length} chars`);
-
     // Normalise to a clean base64 string (strip data URI prefix if present)
     let cleanBase64: string;
     if (imageData.startsWith('data:image')) {
@@ -287,18 +275,12 @@ export async function handleImageGeneration(request: Request, env: Env): Promise
     }
 
     // Always return both b64_json and url so clients can use whichever they prefer.
-    // Cloudflare FLUX.2 always returns raw base64, so we always have b64_json available.
     const imageObject: OpenAiImageObject = {
       b64_json: cleanBase64,
       url: `data:image/png;base64,${cleanBase64}`,
       revised_prompt: prompt
     };
 
-    if (response_format === 'b64_json') {
-      console.log(`[Image] Returning b64_json (${cleanBase64.length} chars)`);
-    } else {
-      console.log(`[Image] Returning url (data URI, ${cleanBase64.length} base64 chars)`);
-    }
 
     // Build OpenAI-compatible response
     const responseData: OpenAiImageGenerationRes = {
