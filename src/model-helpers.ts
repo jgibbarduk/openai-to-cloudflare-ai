@@ -11,8 +11,8 @@
  */
 
 import { textGenerationModels } from './models';
-import { MODEL_ALIASES } from './constants';
-import type { Env, ModelType } from './types';
+import { AUTO_ROUTE_DEFAULTS, AUTO_ROUTE_MODEL_NAMES, AUTO_ROUTE_THRESHOLDS, MODEL_ALIASES } from './constants';
+import type { Env, ModelType, OpenAiChatCompletionReq } from './types';
 
 /** Hardcoded fallback used when neither an alias nor env.DEFAULT_AI_MODEL resolves. */
 const FALLBACK_MODEL = '@cf/qwen/qwen3-30b-a3b-fp8';
@@ -79,6 +79,15 @@ export function getCfModelName(modelName: string | undefined, env: Env): string 
 
   const trimmedName = modelName.trim();
 
+  // Check for auto-route model names — without full request context we can only
+  // return the cheap-tier default here.  The proper routing happens earlier in
+  // transformChatCompletionRequest via resolveAutoRouteModel().
+  if (AUTO_ROUTE_MODEL_NAMES.includes(trimmedName)) {
+    const cheapModel = env.AUTO_ROUTE_CHEAP_MODEL || AUTO_ROUTE_DEFAULTS.cheap;
+    console.log(`[Model] Auto-route model "${trimmedName}" (no request context) → cheap fallback: ${cheapModel}`);
+    return cheapModel;
+  }
+
   // Check if it's an OpenAI alias (gpt-4, gpt-3.5-turbo, etc.)
   if (MODEL_ALIASES[trimmedName]) {
     const resolved = MODEL_ALIASES[trimmedName];
@@ -96,6 +105,78 @@ export function getCfModelName(modelName: string | undefined, env: Env): string 
   const fallback = env.DEFAULT_AI_MODEL || FALLBACK_MODEL;
   console.warn(`[Model] Unknown model "${trimmedName}", falling back to default: ${fallback}`);
   return fallback;
+}
+
+/**
+ * ============================================================================
+ * AUTO-ROUTE MODEL RESOLUTION
+ * ============================================================================
+ */
+
+/**
+ * Select the cheapest Cloudflare model that satisfies the given request's needs.
+ *
+ * Routing tiers (evaluated in order):
+ *
+ * 1. **Advanced** – selected when the request has tools AND the context is large,
+ *    OR when the context is large even without tools.  Uses the most capable
+ *    model so that complex reasoning and large histories are handled well.
+ * 2. **Tool** – selected when tools are present but the context is modest.
+ *    Uses a tool-capable model without paying for a large-context model.
+ * 3. **Cheap** – the default for simple, tool-free conversational requests.
+ *
+ * All three model tiers can be overridden via environment variables:
+ * `AUTO_ROUTE_CHEAP_MODEL`, `AUTO_ROUTE_TOOL_MODEL`, `AUTO_ROUTE_ADVANCED_MODEL`.
+ *
+ * @param request - Normalised OpenAI chat completion request (messages already set)
+ * @param env     - Worker environment (for model overrides)
+ * @returns Cloudflare Workers AI model identifier
+ *
+ * @example
+ * // Simple request — no tools, short context
+ * resolveAutoRouteModel({ messages: [{role:'user', content:'hi'}] }, env);
+ * // → '@cf/meta/llama-3-8b-instruct'
+ *
+ * @example
+ * // Request with tools
+ * resolveAutoRouteModel({ messages: [...], tools: [{...}] }, env);
+ * // → '@cf/qwen/qwen3-30b-a3b-fp8'
+ */
+export function resolveAutoRouteModel(request: OpenAiChatCompletionReq, env: Env): string {
+  const hasTools = !!(request.tools && request.tools.length > 0);
+  const messageCount = request.messages?.length ?? 0;
+  const totalChars = request.messages?.reduce(
+    (sum, msg) => sum + ((msg.content as string)?.length ?? 0),
+    0
+  ) ?? 0;
+  const toolCount = request.tools?.length ?? 0;
+
+  const isComplexContext =
+    messageCount > AUTO_ROUTE_THRESHOLDS.advancedMessageCount ||
+    totalChars    > AUTO_ROUTE_THRESHOLDS.advancedTotalChars;
+
+  const isManyTools = toolCount > AUTO_ROUTE_THRESHOLDS.advancedToolCount;
+
+  // Advanced tier: complex context, or many tools
+  if (isComplexContext || isManyTools) {
+    const advancedModel = env.AUTO_ROUTE_ADVANCED_MODEL || AUTO_ROUTE_DEFAULTS.advanced;
+    console.log(
+      `[AutoRoute] Advanced tier (tools=${hasTools}, toolCount=${toolCount}, msgs=${messageCount}, chars=${totalChars}) → ${advancedModel}`
+    );
+    return advancedModel;
+  }
+
+  // Tool tier: tools present, moderate context
+  if (hasTools) {
+    const toolModel = env.AUTO_ROUTE_TOOL_MODEL || AUTO_ROUTE_DEFAULTS.tool;
+    console.log(`[AutoRoute] Tool tier (${toolCount} tools, msgs=${messageCount}) → ${toolModel}`);
+    return toolModel;
+  }
+
+  // Cheap tier: simple conversational request
+  const cheapModel = env.AUTO_ROUTE_CHEAP_MODEL || AUTO_ROUTE_DEFAULTS.cheap;
+  console.log(`[AutoRoute] Cheap tier (msgs=${messageCount}, chars=${totalChars}) → ${cheapModel}`);
+  return cheapModel;
 }
 
 /**
@@ -175,6 +256,7 @@ export async function displayModelsInfo(env: Env, request: Request): Promise<Res
     .model-task { color: #888; font-size: 0.9em; font-style: italic; }
     .aliases { background: #fff3cd; padding: 10px; margin: 20px 0; border-radius: 5px; }
     .stats { background: #d1ecf1; padding: 10px; margin: 20px 0; border-radius: 5px; }
+    .autoroute { background: #d4edda; padding: 10px; margin: 20px 0; border-radius: 5px; }
   </style>
 </head>
 <body>
@@ -187,6 +269,34 @@ export async function displayModelsInfo(env: Env, request: Request): Promise<Res
       <li><strong>OpenAI aliases:</strong> ${Object.keys(MODEL_ALIASES).length}</li>
       <li><strong>Default model:</strong> ${env.DEFAULT_AI_MODEL || FALLBACK_MODEL}</li>
     </ul>
+  </div>
+
+  <div class="autoroute">
+    <h2>Auto-Route Model (<code>auto</code> / <code>auto/route</code>)</h2>
+    <p>Request model <strong>auto</strong> or <strong>auto/route</strong> to let the proxy pick the
+    cheapest model that meets your request's needs — similar to
+    <a href="https://docs.notdiamond.ai/docs/what-is-not-diamond" target="_blank">NotDiamond</a>.</p>
+    <table>
+      <thead><tr><th>Tier</th><th>When selected</th><th>Active model</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><strong>cheap</strong></td>
+          <td>No tools, small context (&lt;${AUTO_ROUTE_THRESHOLDS.advancedMessageCount} msgs, &lt;${AUTO_ROUTE_THRESHOLDS.advancedTotalChars} chars)</td>
+          <td>${env.AUTO_ROUTE_CHEAP_MODEL || AUTO_ROUTE_DEFAULTS.cheap}</td>
+        </tr>
+        <tr>
+          <td><strong>tool</strong></td>
+          <td>Tools requested, moderate context (&le;${AUTO_ROUTE_THRESHOLDS.advancedToolCount} tools)</td>
+          <td>${env.AUTO_ROUTE_TOOL_MODEL || AUTO_ROUTE_DEFAULTS.tool}</td>
+        </tr>
+        <tr>
+          <td><strong>advanced</strong></td>
+          <td>Large context OR many tools (&gt;${AUTO_ROUTE_THRESHOLDS.advancedToolCount} tools, or &gt;${AUTO_ROUTE_THRESHOLDS.advancedMessageCount} msgs, or &gt;${AUTO_ROUTE_THRESHOLDS.advancedTotalChars} chars)</td>
+          <td>${env.AUTO_ROUTE_ADVANCED_MODEL || AUTO_ROUTE_DEFAULTS.advanced}</td>
+        </tr>
+      </tbody>
+    </table>
+    <p><em>Override via env vars: <code>AUTO_ROUTE_CHEAP_MODEL</code>, <code>AUTO_ROUTE_TOOL_MODEL</code>, <code>AUTO_ROUTE_ADVANCED_MODEL</code>.</em></p>
   </div>
 
   <div class="aliases">

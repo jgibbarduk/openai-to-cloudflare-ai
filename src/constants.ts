@@ -25,7 +25,68 @@
  * @example
  * console.log(`Starting proxy v${PROXY_VERSION}`);
  */
-export const PROXY_VERSION = "2.2.8"; // Updated: 2026-03-01 - FIX: Always return both url and b64_json in image responses so Onyx can render images regardless of response_format
+export const PROXY_VERSION = "2.3.0"; // Updated: 2026-03-15 - FEAT: Add auto/route model for intelligent model selection based on request complexity
+
+/**
+ * ============================================================================
+ * AUTO-ROUTE MODEL
+ * ============================================================================
+ */
+
+/**
+ * Model names that trigger automatic intelligent model routing.
+ *
+ * When a client requests one of these model names, the proxy will analyse
+ * the incoming request (tools requested, context length, message count) and
+ * select the most cost-effective Cloudflare model that meets the request's
+ * requirements — similar to how NotDiamond routes prompts to the best model.
+ *
+ * @constant
+ * @example
+ * // In OpenAI client
+ * const response = await openai.chat.completions.create({ model: 'auto', … });
+ */
+export const AUTO_ROUTE_MODEL_NAMES: readonly string[] = ['auto', 'auto/route'];
+
+/**
+ * Default Cloudflare models used for each routing tier.
+ *
+ * These are used when the corresponding `AUTO_ROUTE_*_MODEL` environment
+ * variables are not set.  They represent a balanced cost/capability choice:
+ *
+ * - **cheap**    – Fast, low-cost model for simple conversational tasks.
+ * - **tool**     – Tool-capable model for requests that include function/tool definitions.
+ * - **advanced** – High-capability model for large contexts or complex tool usage.
+ *
+ * @constant
+ */
+export const AUTO_ROUTE_DEFAULTS = {
+  cheap:    '@cf/meta/llama-3-8b-instruct',
+  tool:     '@cf/qwen/qwen3-30b-a3b-fp8',
+  advanced: '@cf/zai-org/glm-4.7-flash',
+} as const;
+
+/**
+ * Thresholds used by the auto-routing logic to decide when to escalate to the
+ * `advanced` model tier.
+ *
+ * A request is considered "complex" (and therefore routed to the advanced
+ * model) when ANY of the following thresholds is exceeded:
+ *
+ * - `advancedMessageCount` – total messages in the conversation
+ * - `advancedTotalChars`   – total characters across all message contents
+ * - `advancedToolCount`    – number of tool/function definitions in the request
+ *
+ * All values can be tuned by changing this object; the env-var overrides for
+ * model selection are in {@link Env}.
+ *
+ * @constant
+ */
+export const AUTO_ROUTE_THRESHOLDS = {
+  advancedMessageCount: 20,
+  advancedTotalChars:   8000,
+  advancedToolCount:    5,
+} as const;
 
 /**
  * ============================================================================
