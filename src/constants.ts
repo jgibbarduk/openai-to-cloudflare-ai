@@ -61,9 +61,16 @@ export const AUTO_ROUTE_MODEL_NAMES: readonly string[] = ['auto', 'auto/route'];
  * @constant
  */
 export const AUTO_ROUTE_DEFAULTS = {
-  cheap:    '@cf/meta/llama-3-8b-instruct',
-  tool:     '@cf/qwen/qwen3-30b-a3b-fp8',
-  advanced: '@cf/zai-org/glm-4.7-flash',
+  cheap: [
+    '@cf/meta/llama-3-8b-instruct',
+  ],
+  tool: [
+    '@cf/qwen/qwen3-30b-a3b-fp8',
+  ],
+  advanced: [
+    '@cf/zai-org/glm-4.7-flash',
+    '@cf/nvidia/nemotron-3-120b-a12b',
+  ],
 } as const;
 
 /**
@@ -86,6 +93,23 @@ export const AUTO_ROUTE_THRESHOLDS = {
   advancedMessageCount: 20,
   advancedTotalChars:   8000,
   advancedToolCount:    5,
+} as const;
+
+/**
+ * Scoring thresholds for the multi-signal auto-router.
+ *
+ * The router assigns a score based on detected signals (task type, context size,
+ * tool use, structured output, etc.) and uses these thresholds to pick a tier:
+ *
+ * - score < `tool`     → cheap tier
+ * - score < `advanced` → tool tier
+ * - score >= `advanced` → advanced tier
+ *
+ * @constant
+ */
+export const AUTO_ROUTE_SCORE_THRESHOLDS = {
+  tool:     3,   // score >= 3 → tool tier
+  advanced: 8,   // score >= 8 → advanced tier
 } as const;
 
 /**
@@ -141,6 +165,7 @@ export const TOOL_CAPABLE_MODELS = [
   // '@cf/mistralai/mistral-small-3.1-24b-instruct',
   '@cf/qwen/qwen3-30b-a3b-fp8',  // ✅ Qwen properly supports function calling
   '@cf/zai-org/glm-4.7-flash',  // ✅ GLM-4 supports function calling
+  '@cf/nvidia/nemotron-3-120b-a12b',  // ✅ Nemotron 3 Super supports tool use
 ];
 
 /**
@@ -192,6 +217,7 @@ export const MODEL_ALIASES: Record<string, string> = {
   'mistral': '@cf/mistralai/mistral-small-3.1-24b-instruct',  // Alias for mistral-small
   'glm-4-flash': '@cf/zai-org/glm-4.7-flash',  // ✅ GLM-4 Flash alias
   'glm-4.7-flash': '@cf/zai-org/glm-4.7-flash',  // ✅ GLM-4.7 Flash alias
+  'nemotron': '@cf/nvidia/nemotron-3-120b-a12b',  // ✅ NVIDIA Nemotron 3 Super hybrid MoE model
   'gpt-image-1': '@cf/black-forest-labs/flux-2-klein-9b',  // ✅ NEW: Maps OpenAI image model to Flux
   'dall-e-3': '@cf/black-forest-labs/flux-2-klein-9b',  // Alternative alias for image generation
   'dall-e-2': '@cf/black-forest-labs/flux-2-klein-9b',  // Alternative alias for image generation
@@ -234,6 +260,8 @@ export const MODEL_MAX_TOKENS: Record<string, number> = {
   // GPT-OSS models
   '@cf/openai/gpt-oss-20b': 4096,
   '@cf/openai/gpt-oss-120b': 4096,
+  // NVIDIA Nemotron 3 Super — 256K context
+  '@cf/nvidia/nemotron-3-120b-a12b': 256000,
   // Flux image generation
   '@cf/black-forest-labs/flux-2-klein-9b': 512,  // For image generation, max_tokens isn't used the same way
   '@cf/black-forest-labs/flux-2-dev': 512,  // Alternative Flux model

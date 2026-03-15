@@ -41,18 +41,18 @@ export interface Env {
    * Model to use for simple, cheap tasks when auto-routing is active
    * (no tools, small context). Defaults to @cf/meta/llama-3-8b-instruct.
    */
-  AUTO_ROUTE_CHEAP_MODEL?: string;
+  AUTO_ROUTE_CHEAP_MODELS?: string;
   /**
    * Model to use for tool-calling tasks when auto-routing is active.
    * Defaults to @cf/qwen/qwen3-30b-a3b-fp8.
    */
-  AUTO_ROUTE_TOOL_MODEL?: string;
+  AUTO_ROUTE_TOOL_MODELS?: string;
   /**
    * Model to use for advanced/complex tasks when auto-routing is active
    * (large context, many tools, or many messages).
    * Defaults to @cf/zai-org/glm-4.7-flash.
    */
-  AUTO_ROUTE_ADVANCED_MODEL?: string;
+  AUTO_ROUTE_ADVANCED_MODELS?: string;
 }
 
 /**

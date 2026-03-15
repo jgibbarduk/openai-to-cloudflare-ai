@@ -19,6 +19,11 @@ export const textGenerationModels = [{
 	description: "OpenAI's open-weight models designed for powerful reasoning, agentic tasks, and versatile developer use cases – gpt-oss-120b is for production, general purpose, high reasoning use-cases.",
 }, {
 	...commonProps,
+	id: "@cf/nvidia/nemotron-3-120b-a12b#text-generation",
+	name: "@cf/nvidia/nemotron-3-120b-a12b",
+	description: "NVIDIA Nemotron 3 Super is a hybrid MoE model with leading accuracy for multi-agent applications and specialized agentic AI systems. Supports tool use with a 256K context window.",
+}, {
+	...commonProps,
 	id: "@cf/meta/llama-3-8b-instruct#text-generation",
 	name: "@cf/meta/llama-3-8b-instruct",
 	description: "Generation over generation, Meta Llama 3 demonstrates state-of-the-art performance on a wide range of industry benchmarks and offers new capabilities, including improved reasoning.",

@@ -12,6 +12,7 @@
 
 import { errorResponse, serverError, validationError } from '../errors';
 import { getCfModelName, listAIModels } from '../model-helpers';
+import { AUTO_ROUTE_MODEL_NAMES } from '../constants';
 import { validateAndNormalizeRequest, transformChatCompletionRequest } from '../transformers/request.transformer';
 import { extractGptOssResponse, extractOpenAiCompatibleResponse, sanitizeAiResponse } from '../parsers/response.parser';
 import { buildOpenAIChatResponse, buildOpenAIResponsesFormat } from '../builders/response.builder';
@@ -395,6 +396,13 @@ export async function handleChatCompletions(request: Request, env: Env): Promise
     // Transform to Cloudflare format
     const { model, options } = transformChatCompletionRequest(validatedData, env);
 
+    // For auto-route requests, report the resolved CF model in the response so
+    // callers can see which model was actually selected. For named aliases
+    // (e.g. "gpt-4o") echo back what the client sent — mirrors OpenAI's convention.
+    const responseModel = AUTO_ROUTE_MODEL_NAMES.includes((data.model ?? '').trim())
+      ? model
+      : (data.model || model);
+
     // NEW: Prevent using embedding models with chat/completions endpoint
     try {
       const modelInfo = allModels.find(m => (m.id === model || m.name === model));
@@ -475,7 +483,7 @@ export async function handleChatCompletions(request: Request, env: Env): Promise
 
     // Handle streaming response
     if (options.stream && aiRes instanceof ReadableStream) {
-      return handleStreamingResponse(aiRes, data.model || model);
+      return handleStreamingResponse(aiRes, responseModel);
     }
 
     // Handle non-streaming response
@@ -519,7 +527,7 @@ export async function handleChatCompletions(request: Request, env: Env): Promise
     console.log(`[Chat] Completed in ${duration}ms`);
 
     // Build and return response (always Chat Completions format for this endpoint)
-    return buildChatResponse(parsedResponse, data.model || model, false);
+    return buildChatResponse(parsedResponse, responseModel, false);
 
   } catch (error) {
     const duration = Date.now() - startTime;

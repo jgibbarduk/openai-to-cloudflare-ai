@@ -24,10 +24,16 @@ tasks:
       - "{{.node}} test"
 
   test:integration:
-    desc: "Run HTTP integration tests against wrangler dev --remote (requires Cloudflare auth). Depends on install."
+    desc: "Run ALL HTTP integration tests against wrangler dev --remote (requires Cloudflare auth). Depends on install."
     deps: [ install ]
     cmds:
       - "{{.node}} run test:integration"
+
+  test:auto-router:
+    desc: "Run auto-router end-to-end HTTP integration tests only (requires Cloudflare auth + running worker). Depends on install."
+    deps: [ install ]
+    cmds:
+      - npx jest --config=jest.integration.config.cjs --passWithNoTests --testPathPattern="auto-router.integration-http"
 
   typecheck:
     desc: "Run TypeScript type checking"
@@ -75,9 +81,11 @@ tasks:
     desc: "Print this file and usage hints"
     cmds:
       - echo "Taskfile usage examples:"
-      - echo "  task install         # install deps"
-      - echo "  task test            # run tests"
-      - echo "  task dev             # start wrangler dev"
-      - echo "  task deploy          # deploy to Cloudflare"
-      - echo "  task tail-logs       # tail logs with wrangler"
+      - echo "  task install              # install deps"
+      - echo "  task test                 # run unit tests"
+      - echo "  task test:integration     # run all HTTP integration tests"
+      - echo "  task test:auto-router     # run auto-router e2e tests only"
+      - echo "  task dev                  # start wrangler dev"
+      - echo "  task deploy               # deploy to Cloudflare"
+      - echo "  task tail-logs            # tail logs with wrangler"
 

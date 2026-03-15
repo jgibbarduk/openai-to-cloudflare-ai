@@ -11,10 +11,12 @@
  */
 
 import { textGenerationModels } from './models';
-import { AUTO_ROUTE_DEFAULTS, AUTO_ROUTE_MODEL_NAMES, AUTO_ROUTE_THRESHOLDS, MODEL_ALIASES } from './constants';
+import { AUTO_ROUTE_DEFAULTS, AUTO_ROUTE_MODEL_NAMES, AUTO_ROUTE_SCORE_THRESHOLDS, AUTO_ROUTE_THRESHOLDS, MODEL_ALIASES } from './constants';
+import { pickFromPool } from './auto-router';
 import type { Env, ModelType, OpenAiChatCompletionReq } from './types';
 
-/** Hardcoded fallback used when neither an alias nor env.DEFAULT_AI_MODEL resolves. */
+
+
 const FALLBACK_MODEL = '@cf/qwen/qwen3-30b-a3b-fp8';
 
 /**
@@ -83,7 +85,7 @@ export function getCfModelName(modelName: string | undefined, env: Env): string 
   // return the cheap-tier default here.  The proper routing happens earlier in
   // transformChatCompletionRequest via resolveAutoRouteModel().
   if (AUTO_ROUTE_MODEL_NAMES.includes(trimmedName)) {
-    const cheapModel = env.AUTO_ROUTE_CHEAP_MODEL || AUTO_ROUTE_DEFAULTS.cheap;
+    const cheapModel = pickFromPool(env.AUTO_ROUTE_CHEAP_MODELS, AUTO_ROUTE_DEFAULTS.cheap);
     console.log(`[Model] Auto-route model "${trimmedName}" (no request context) → cheap fallback: ${cheapModel}`);
     return cheapModel;
   }
@@ -111,73 +113,10 @@ export function getCfModelName(modelName: string | undefined, env: Env): string 
  * ============================================================================
  * AUTO-ROUTE MODEL RESOLUTION
  * ============================================================================
+ * Routing logic lives in src/auto-router.ts and is re-exported here for
+ * backward compatibility with existing imports.
  */
-
-/**
- * Select the cheapest Cloudflare model that satisfies the given request's needs.
- *
- * Routing tiers (evaluated in order):
- *
- * 1. **Advanced** – selected when the request has tools AND the context is large,
- *    OR when the context is large even without tools.  Uses the most capable
- *    model so that complex reasoning and large histories are handled well.
- * 2. **Tool** – selected when tools are present but the context is modest.
- *    Uses a tool-capable model without paying for a large-context model.
- * 3. **Cheap** – the default for simple, tool-free conversational requests.
- *
- * All three model tiers can be overridden via environment variables:
- * `AUTO_ROUTE_CHEAP_MODEL`, `AUTO_ROUTE_TOOL_MODEL`, `AUTO_ROUTE_ADVANCED_MODEL`.
- *
- * @param request - Normalised OpenAI chat completion request (messages already set)
- * @param env     - Worker environment (for model overrides)
- * @returns Cloudflare Workers AI model identifier
- *
- * @example
- * // Simple request — no tools, short context
- * resolveAutoRouteModel({ messages: [{role:'user', content:'hi'}] }, env);
- * // → '@cf/meta/llama-3-8b-instruct'
- *
- * @example
- * // Request with tools
- * resolveAutoRouteModel({ messages: [...], tools: [{...}] }, env);
- * // → '@cf/qwen/qwen3-30b-a3b-fp8'
- */
-export function resolveAutoRouteModel(request: OpenAiChatCompletionReq, env: Env): string {
-  const hasTools = !!(request.tools && request.tools.length > 0);
-  const messageCount = request.messages?.length ?? 0;
-  const totalChars = request.messages?.reduce(
-    (sum, msg) => sum + ((msg.content as string)?.length ?? 0),
-    0
-  ) ?? 0;
-  const toolCount = request.tools?.length ?? 0;
-
-  const isComplexContext =
-    messageCount > AUTO_ROUTE_THRESHOLDS.advancedMessageCount ||
-    totalChars    > AUTO_ROUTE_THRESHOLDS.advancedTotalChars;
-
-  const isManyTools = toolCount > AUTO_ROUTE_THRESHOLDS.advancedToolCount;
-
-  // Advanced tier: complex context, or many tools
-  if (isComplexContext || isManyTools) {
-    const advancedModel = env.AUTO_ROUTE_ADVANCED_MODEL || AUTO_ROUTE_DEFAULTS.advanced;
-    console.log(
-      `[AutoRoute] Advanced tier (tools=${hasTools}, toolCount=${toolCount}, msgs=${messageCount}, chars=${totalChars}) → ${advancedModel}`
-    );
-    return advancedModel;
-  }
-
-  // Tool tier: tools present, moderate context
-  if (hasTools) {
-    const toolModel = env.AUTO_ROUTE_TOOL_MODEL || AUTO_ROUTE_DEFAULTS.tool;
-    console.log(`[AutoRoute] Tool tier (${toolCount} tools, msgs=${messageCount}) → ${toolModel}`);
-    return toolModel;
-  }
-
-  // Cheap tier: simple conversational request
-  const cheapModel = env.AUTO_ROUTE_CHEAP_MODEL || AUTO_ROUTE_DEFAULTS.cheap;
-  console.log(`[AutoRoute] Cheap tier (msgs=${messageCount}, chars=${totalChars}) → ${cheapModel}`);
-  return cheapModel;
-}
+export { resolveAutoRouteModel } from './auto-router';
 
 /**
  * ============================================================================
@@ -274,29 +213,34 @@ export async function displayModelsInfo(env: Env, request: Request): Promise<Res
   <div class="autoroute">
     <h2>Auto-Route Model (<code>auto</code> / <code>auto/route</code>)</h2>
     <p>Request model <strong>auto</strong> or <strong>auto/route</strong> to let the proxy pick the
-    cheapest model that meets your request's needs — similar to
+    cheapest model that meets your request's needs using a multi-signal scoring system inspired by
     <a href="https://docs.notdiamond.ai/docs/what-is-not-diamond" target="_blank">NotDiamond</a>.</p>
+    <p>Signals scored: tool count, context size, task type (coding / reasoning), active agentic loop
+    (tool-role messages in history), structured JSON output, and system prompt complexity.
+    Score &lt; ${AUTO_ROUTE_SCORE_THRESHOLDS.tool} → <strong>cheap</strong> &nbsp;|&nbsp;
+    ${AUTO_ROUTE_SCORE_THRESHOLDS.tool}–${AUTO_ROUTE_SCORE_THRESHOLDS.advanced - 1} → <strong>tool</strong> &nbsp;|&nbsp;
+    ≥ ${AUTO_ROUTE_SCORE_THRESHOLDS.advanced} → <strong>advanced</strong></p>
     <table>
-      <thead><tr><th>Tier</th><th>When selected</th><th>Active model</th></tr></thead>
+      <thead><tr><th>Tier</th><th>When selected</th><th>Active model pool</th></tr></thead>
       <tbody>
         <tr>
           <td><strong>cheap</strong></td>
-          <td>No tools, small context (&lt;${AUTO_ROUTE_THRESHOLDS.advancedMessageCount} msgs, &lt;${AUTO_ROUTE_THRESHOLDS.advancedTotalChars} chars)</td>
-          <td>${env.AUTO_ROUTE_CHEAP_MODEL || AUTO_ROUTE_DEFAULTS.cheap}</td>
+          <td>Score &lt; ${AUTO_ROUTE_SCORE_THRESHOLDS.tool} — simple chat, no tools, small context</td>
+          <td>${env.AUTO_ROUTE_CHEAP_MODELS || AUTO_ROUTE_DEFAULTS.cheap.join(', ')}</td>
         </tr>
         <tr>
           <td><strong>tool</strong></td>
-          <td>Tools requested, moderate context (&le;${AUTO_ROUTE_THRESHOLDS.advancedToolCount} tools)</td>
-          <td>${env.AUTO_ROUTE_TOOL_MODEL || AUTO_ROUTE_DEFAULTS.tool}</td>
+          <td>Score ${AUTO_ROUTE_SCORE_THRESHOLDS.tool}–${AUTO_ROUTE_SCORE_THRESHOLDS.advanced - 1} — tools, code content, structured output, or reasoning</td>
+          <td>${env.AUTO_ROUTE_TOOL_MODELS || AUTO_ROUTE_DEFAULTS.tool.join(', ')}</td>
         </tr>
         <tr>
           <td><strong>advanced</strong></td>
-          <td>Large context OR many tools (&gt;${AUTO_ROUTE_THRESHOLDS.advancedToolCount} tools, or &gt;${AUTO_ROUTE_THRESHOLDS.advancedMessageCount} msgs, or &gt;${AUTO_ROUTE_THRESHOLDS.advancedTotalChars} chars)</td>
-          <td>${env.AUTO_ROUTE_ADVANCED_MODEL || AUTO_ROUTE_DEFAULTS.advanced}</td>
+          <td>Score ≥ ${AUTO_ROUTE_SCORE_THRESHOLDS.advanced} — large context, many tools, active agentic loop, or combined signals</td>
+          <td>${env.AUTO_ROUTE_ADVANCED_MODELS || AUTO_ROUTE_DEFAULTS.advanced.join(', ')}</td>
         </tr>
       </tbody>
     </table>
-    <p><em>Override via env vars: <code>AUTO_ROUTE_CHEAP_MODEL</code>, <code>AUTO_ROUTE_TOOL_MODEL</code>, <code>AUTO_ROUTE_ADVANCED_MODEL</code>.</em></p>
+    <p><em>Override via env vars: <code>AUTO_ROUTE_CHEAP_MODELS</code>, <code>AUTO_ROUTE_TOOL_MODELS</code>, <code>AUTO_ROUTE_ADVANCED_MODELS</code>.</em></p>
   </div>
 
   <div class="aliases">
